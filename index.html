@@ -6173,11 +6173,12 @@ async function nspEval(opts){
 }
 // 一键跑评测(给非控制台用户;在 ⚙ Key 设置面板里):带 toast 进度,完成自动下载报告
 function runEvalButton(){
-  if(!getGeminiKey()){ showKeySetup(); aiToast('请先设置 Gemini Key 再跑评测'); return; }
-  aiToast('🧪 评测进行中…约 2-3 分钟,完成后自动下载报告');
-  nspEval({ onProgress:(i,n)=>{ if(i===1||i%4===0||i===n) aiToast('🧪 评测中 '+i+'/'+n+'…'); } })
-    .then(a=>{ if(a) aiToast('✅ 评测完成,报告已下载(window._lastEval.md)'); })
-    .catch(()=>aiToast('评测失败,请确认 Key 有效、网络正常'));
+  const st=document.getElementById('evalStatus'); const set=(t)=>{ if(st) st.textContent=t; };
+  if(!getGeminiKey()){ showKeySetup(); aiToast('请先设置 Gemini Key 再跑评测'); set('⚠ 请先在 ⚙ 设置 Gemini Key'); return; }
+  set('🧪 评测启动中…(约 2-3 分钟,完成自动下载报告)'); aiToast('🧪 评测进行中…完成后自动下载报告');
+  nspEval({ onProgress:(i,n)=>{ set('🧪 评测中 '+i+'/'+n+'…(请勿关闭页面)'); } })
+    .then(a=>{ if(a){ set('✅ 完成:'+a['用例数']+'例 · 幻觉率'+a['幻觉率']+' · 报告已下载'); aiToast('✅ 评测完成,报告已下载'); } else set('⚠ 未完成(请确认已设 Key)'); })
+    .catch(e=>{ set('❌ 失败:'+String(e&&e.message||e).slice(0,50)); aiToast('评测失败,看状态行'); });
 }
 try{ console.info('%c[南山图鉴] AI Eval 套件已就绪 → 控制台输入 nspEval() 运行(需先设 Gemini Key)','color:#c6a05a'); }catch(_){}
 
@@ -6769,10 +6770,6 @@ function _amenRealKm(name, c){
       <input id="geminiKeyInput" type="password" placeholder="粘贴你的 Gemini API Key（AIza...）" autocomplete="off">
       <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">从 Google AI Studio 免费获取 Key →</a>
       <div class="ai-key-btns"><button onclick="saveGeminiKey()">保存</button><button onclick="clearGeminiKey()">清除 Key</button></div>
-      <div style="margin-top:10px;border-top:1px dashed var(--cream3);padding-top:10px;">
-        <button onclick="runEvalButton()" style="font-size:12px;padding:7px 12px;border:1px solid var(--gold-b);border-radius:6px;background:var(--white);color:var(--gold);cursor:pointer;">🧪 跑 AI 评测</button>
-        <span style="font-size:10px;color:#9a9088;margin-left:6px;">20 例约 2-3 分钟,完成自动下载报告(作品集用)</span>
-      </div>
     </div>
     <div class="ai-panel-actions">
       <button class="ai-gear" onclick="showKeySetup()" title="设置 Gemini API Key">⚙</button>
@@ -6780,6 +6777,10 @@ function _amenRealKm(name, c){
     </div>
     <div id="aiResult" class="ai-result"></div>
     <div class="ai-credit">真实 LLM 调用 · 模型只能从图鉴内 19 个楼盘中推荐，不编造数据</div>
+    <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <button onclick="runEvalButton()" style="font-size:11.5px;padding:6px 12px;border:1px solid var(--gold-b);border-radius:14px;background:var(--white);color:var(--gold);cursor:pointer;white-space:nowrap;">🧪 跑 AI 评测</button>
+      <span id="evalStatus" style="font-size:11px;color:#9a9088;flex:1;min-width:120px;"></span>
+    </div>
   </div>
 </div>
 
