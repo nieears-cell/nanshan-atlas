@@ -6108,6 +6108,15 @@ async function _initCesium(){
       v.clock.currentTime=Cesium.JulianDate.fromIso8601('2026-06-09T08:00:00Z'); // ≈ 北京时间 16:00 斜阳
       v.clock.shouldAnimate=false;
     }catch(_){}
+    // —— 立体细节:开启阴影。斜阳下楼体在地面与彼此之间投出真实阴影 → 几何虽是体块,但靠光影从"平板色块"读成有体积感的城市模型。
+    try{
+      v.shadows=true;
+      if(v.shadowMap){
+        v.shadowMap.softShadows=true;       // 软阴影边缘,不死硬
+        v.shadowMap.size=2048;              // 阴影贴图分辨率
+        v.shadowMap.maximumDistance=15000;  // 限制阴影渲染距离,省性能
+      }
+    }catch(_){}
     // 高清影像:两层叠加。底层 Esri(免 key、全球可用,作兜底);顶层天地图(国内源、深圳更清、无偏移),
     // 仅在配了 tk 时叠加;天地图域名未授权/请求失败处,该瓦片自动露出下方 Esri → 本地与线上都不会黑。
     try{
