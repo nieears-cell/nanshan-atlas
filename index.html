@@ -6262,7 +6262,7 @@ async function _initCesium(){
     // —— 清晰度强化:默认 Cesium 按 CSS 像素(1x)渲染,Mac 高分屏会被浏览器拉伸到 2x 显示 → 整个画面(地面/楼体/文字)发糊。这才是"糊"的主因,下面一组按设备像素+抗锯齿+更细瓦片渲染。
     try{
       v.useBrowserRecommendedResolution=false;   // 关键:按 devicePixelRatio(Retina=2x)渲染,糊的主因就在这一行
-      v.scene.msaaSamples=4;                      // WebGL2 多重采样抗锯齿:楼体/文字边缘不再毛刺
+      v.scene.msaaSamples=2;                      // WebGL2 抗锯齿(从4降到2省显卡;2x Retina 下肉眼差别很小)
       if(v.scene.postProcessStages&&v.scene.postProcessStages.fxaa) v.scene.postProcessStages.fxaa.enabled=true; // FXAA 兜底
       v.scene.globe.maximumScreenSpaceError=1.5;  // 瓦片更细(默认2,越小越清):同样视角自动选更高清的影像/地形
     }catch(_){}
@@ -6278,8 +6278,8 @@ async function _initCesium(){
       v.shadows=true;
       if(v.shadowMap){
         v.shadowMap.softShadows=true;       // 软阴影边缘,不死硬
-        v.shadowMap.size=2048;              // 阴影贴图分辨率
-        v.shadowMap.maximumDistance=15000;  // 限制阴影渲染距离,省性能
+        v.shadowMap.size=1024;              // 阴影贴图分辨率(从2048降到1024,省显卡)
+        v.shadowMap.maximumDistance=9000;   // 限制阴影渲染距离,省性能
       }
     }catch(_){}
     // —— 氛围:Bloom 辉光(偏置到只让高光发亮:海面反光/亮楼面)+ 天空大气增强 → 电影高级感
