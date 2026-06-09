@@ -6165,7 +6165,7 @@ async function _initCesium(){
           ["true","color('#6f7a88')"]
         ]}
       });
-      v.scene.primitives.add(osm);
+      v.scene.primitives.add(osm); _osmTileset=osm;   // 存引用:日/暮切换要重着色
     }catch(e){ console.warn('[OSM buildings]',e); }
     // 19 个楼盘 → 转 WGS-84 → 贴地标注
     communities.forEach(c=>{
@@ -6314,6 +6314,47 @@ function _on3DHover(pos){
   card.style.left=x+'px'; card.style.top=y+'px';
 }
 
+/* ── 日 / 暮 模式:暮色压暗卫星图 + 暗天空 + 高楼染暖金(配 Bloom 像点亮塔冠)+ 环境光遮蔽,贴近"深空暗调"参考 ── */
+let _dusk3D=false,_osmTileset=null;
+function _styleBuildings(dusk){
+  if(!_osmTileset) return;
+  _osmTileset.style=new Cesium.Cesium3DTileStyle({
+    defines:{ h:"${feature['cesium#estimatedHeight']}" },
+    color:{ conditions: dusk ? [
+      ["${h} >= 150","color('#f0c074')"],   // 高楼暖金:暮色里像点亮的塔冠,Bloom 会发光
+      ["${h} >= 90","color('#6b5f7e')"],
+      ["${h} >= 45","color('#3c3a52')"],
+      ["true","color('#2c2b3c')"]            // 矮楼冷暗
+    ] : [
+      ["${h} >= 180","color('#c6a05a')"],
+      ["${h} >= 100","color('#9aa7b8')"],
+      ["${h} >= 50","color('#828d9c')"],
+      ["true","color('#6f7a88')"]
+    ]}
+  });
+}
+function _apply3DMode(){
+  const v=_cesiumViewer; if(!v) return; const dusk=_dusk3D;
+  try{
+    // 太阳时刻:日间斜阳(≈16:00)/ 暮色(≈18:50 低斜阳,长影暖调)
+    v.clock.currentTime=Cesium.JulianDate.fromIso8601(dusk?'2026-06-09T10:50:00Z':'2026-06-09T08:00:00Z');
+    // 卫星影像压暗去饱和 → 暮/夜地表
+    for(let i=0;i<v.imageryLayers.length;i++){ const L=v.imageryLayers.get(i);
+      L.brightness=dusk?0.4:1.0; L.saturation=dusk?0.55:1.0; L.gamma=dusk?0.95:1.0; }
+    _styleBuildings(dusk);
+    if(v.scene.skyAtmosphere) v.scene.skyAtmosphere.brightnessShift=dusk?-0.35:0.12;
+    // 环境光遮蔽:暮色下开(暗场里楼缝/接地的柔和暗角更出体积),日间关
+    const ao=v.scene.postProcessStages.ambientOcclusion;
+    if(ao){ ao.enabled=dusk; ao.uniforms.intensity=3.0; ao.uniforms.lengthCap=0.5; ao.uniforms.stepSize=2.0; ao.uniforms.bias=0.12; }
+    v.scene.requestRender();
+  }catch(_){}
+}
+function toggle3DMode(){
+  _dusk3D=!_dusk3D; _apply3DMode();
+  const b=document.getElementById('t3dModeBtn'); if(b) b.textContent=_dusk3D?'☀ 日间':'🌆 暮色';
+  if(typeof aiToast==='function') aiToast(_dusk3D?'🌆 暮色模式':'☀ 日间模式');
+}
+
 /* ═══════════════════════════════════════════════
    评分重做地基 · 客观可计算 + 可溯源(事实层)
    - 教育/医疗 = 距最近名校/三甲(真实 POI 距离),高置信
@@ -6452,6 +6493,7 @@ function _amenRealKm(name, c){
   <div class="t3d-topbar">
     <div class="t3d-title">南山 · 山海之间<span class="t3d-sub">19 个臻选 · 真实坐标 · 当前视野 <b id="t3dCount">19</b> 个</span></div>
     <div class="t3d-actions">
+      <button class="t3d-btn" id="t3dModeBtn" onclick="toggle3DMode()">🌆 暮色</button>
       <button class="t3d-btn" onclick="reset3DView()">↺ 全景</button>
       <button class="t3d-btn t3d-close" onclick="close3DTerrain()">✕ 退出</button>
     </div>
