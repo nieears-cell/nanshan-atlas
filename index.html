@@ -6161,6 +6161,7 @@ async function nspEval(opts){
     try{ data=await _evalCall(tc.q,key); }catch(e){ err=String(e&&e.message||e); }
     const r=_scoreCase(tc,data,err); rows.push(r);
     console.log('('+(i+1)+'/'+cases.length+') '+tc.id+' → '+r.summary);
+    if(opts.onProgress){ try{ opts.onProgress(i+1, cases.length, r.summary); }catch(_){} }
     if(i<cases.length-1) await _sleep(spacing);
   }
   const agg=_aggEval(rows); const md=_evalMarkdown(rows,agg);
@@ -6169,6 +6170,14 @@ async function nspEval(opts){
   _downloadText('nsp-ai-eval-'+rows.length+'cases.md',md);
   console.log('%c完整报告已下载;markdown 在 window._lastEval.md','color:#2A9070');
   return agg;
+}
+// 一键跑评测(给非控制台用户;在 ⚙ Key 设置面板里):带 toast 进度,完成自动下载报告
+function runEvalButton(){
+  if(!getGeminiKey()){ showKeySetup(); aiToast('请先设置 Gemini Key 再跑评测'); return; }
+  aiToast('🧪 评测进行中…约 2-3 分钟,完成后自动下载报告');
+  nspEval({ onProgress:(i,n)=>{ if(i===1||i%4===0||i===n) aiToast('🧪 评测中 '+i+'/'+n+'…'); } })
+    .then(a=>{ if(a) aiToast('✅ 评测完成,报告已下载(window._lastEval.md)'); })
+    .catch(()=>aiToast('评测失败,请确认 Key 有效、网络正常'));
 }
 try{ console.info('%c[南山图鉴] AI Eval 套件已就绪 → 控制台输入 nspEval() 运行(需先设 Gemini Key)','color:#c6a05a'); }catch(_){}
 
@@ -6760,6 +6769,10 @@ function _amenRealKm(name, c){
       <input id="geminiKeyInput" type="password" placeholder="粘贴你的 Gemini API Key（AIza...）" autocomplete="off">
       <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">从 Google AI Studio 免费获取 Key →</a>
       <div class="ai-key-btns"><button onclick="saveGeminiKey()">保存</button><button onclick="clearGeminiKey()">清除 Key</button></div>
+      <div style="margin-top:10px;border-top:1px dashed var(--cream3);padding-top:10px;">
+        <button onclick="runEvalButton()" style="font-size:12px;padding:7px 12px;border:1px solid var(--gold-b);border-radius:6px;background:var(--white);color:var(--gold);cursor:pointer;">🧪 跑 AI 评测</button>
+        <span style="font-size:10px;color:#9a9088;margin-left:6px;">20 例约 2-3 分钟,完成自动下载报告(作品集用)</span>
+      </div>
     </div>
     <div class="ai-panel-actions">
       <button class="ai-gear" onclick="showKeySetup()" title="设置 Gemini API Key">⚙</button>
