@@ -6027,6 +6027,9 @@ function aiToast(msg){
 // Cesium ion token(低风险地图 token;公开前请去 Cesium 后台锁定域名)
 const CESIUM_TOKEN='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJlZmU3ZDkyZS1hY2QxLTRjMGUtOTFlOS1kNmEwMDAzNjBmZmMiLCJpZCI6NDQxOTgyLCJpc3MiOiJodHRwczovL2FwaS5jZXNpdW0uY29tIiwiYXVkIjoidW5kZWZpbmVkX2RlZmF1bHQiLCJpYXQiOjE3ODA5NzE3ODh9.uyigLHWzLGbo958V9tjH6sF9K0zP5wSRAombqvI1Bok';
 const CESIUM_VER='1.142';
+// 天地图浏览器端密钥(tk)。留空 → 自动用 Esri 影像;填上 → 叠加天地图卫星影像(国内源、深圳更清、CGCS2000≈WGS-84 无偏移)。
+// 申请:https://console.tianditu.gov.cn → 创建「浏览器端」应用 → 域名绑定 nieears-cell.github.io → 拿到 tk 填这里。
+const TIANDITU_TK='';
 let _cesiumLoading=false,_cesiumReady=false,_cesiumViewer=null;
 
 // ── GCJ-02 → WGS-84 坐标纠偏(中国火星坐标偏移修正)──
@@ -6091,6 +6094,13 @@ async function _initCesium(){
       fullscreenButton:false, selectionIndicator:false, infoBox:false
     });
     const v=_cesiumViewer;
+    // —— 清晰度强化:默认 Cesium 按 CSS 像素(1x)渲染,Mac 高分屏会被浏览器拉伸到 2x 显示 → 整个画面(地面/楼体/文字)发糊。这才是"糊"的主因,下面一组按设备像素+抗锯齿+更细瓦片渲染。
+    try{
+      v.useBrowserRecommendedResolution=false;   // 关键:按 devicePixelRatio(Retina=2x)渲染,糊的主因就在这一行
+      v.scene.msaaSamples=4;                      // WebGL2 多重采样抗锯齿:楼体/文字边缘不再毛刺
+      if(v.scene.postProcessStages&&v.scene.postProcessStages.fxaa) v.scene.postProcessStages.fxaa.enabled=true; // FXAA 兜底
+      v.scene.globe.maximumScreenSpaceError=1.5;  // 瓦片更细(默认2,越小越清):同样视角自动选更高清的影像/地形
+    }catch(_){}
     v.scene.globe.depthTestAgainstTerrain=true;
     if(v.scene.skyAtmosphere) v.scene.skyAtmosphere.show=true;
     // 黄金时刻光照:开启太阳光照 + 固定下午斜阳,让山体有立体阴影(更立体)
@@ -6098,14 +6108,25 @@ async function _initCesium(){
       v.clock.currentTime=Cesium.JulianDate.fromIso8601('2026-06-09T08:00:00Z'); // ≈ 北京时间 16:00 斜阳
       v.clock.shouldAnimate=false;
     }catch(_){}
-    // 高清影像:Esri World Imagery(WGS-84,比默认 Bing 更锐,免 key,与地形/建筑天然对齐)
+    // 高清影像:两层叠加。底层 Esri(免 key、全球可用,作兜底);顶层天地图(国内源、深圳更清、无偏移),
+    // 仅在配了 tk 时叠加;天地图域名未授权/请求失败处,该瓦片自动露出下方 Esri → 本地与线上都不会黑。
     try{
       v.imageryLayers.removeAll();
+      // 底层:Esri World Imagery(WGS-84,与地形/建筑天然对齐)
       v.imageryLayers.add(new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
         url:'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         maximumLevel:19, credit:'Esri · Maxar · Earthstar Geographics'
       })));
-    }catch(e){ console.warn('[Esri imagery]',e); }
+      // 顶层:天地图卫星影像(球面墨卡托 img_w;CGCS2000≈WGS-84,与现有 GCJ→WGS84 标注对齐)
+      if(TIANDITU_TK){
+        v.imageryLayers.add(new Cesium.ImageryLayer(new Cesium.WebMapTileServiceImageryProvider({
+          url:`https://t{s}.tianditu.gov.cn/img_w/wmts?service=WMTS&request=GetTile&version=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={TileMatrix}&TILEROW={TileRow}&TILECOL={TileCol}&tk=${TIANDITU_TK}`,
+          layer:'img', style:'default', format:'tiles', tileMatrixSetID:'w',
+          subdomains:['0','1','2','3','4','5','6','7'], maximumLevel:18,
+          credit:'天地图 · 国家地理信息公共服务平台'
+        })));
+      }
+    }catch(e){ console.warn('[imagery]',e); }
     // 3D 建筑体块:Cesium OSM Buildings——让南山的楼真正立起来(免费;按高度金/灰着色)
     try{
       const osm=await Cesium.createOsmBuildingsAsync();
