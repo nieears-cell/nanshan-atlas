@@ -6017,6 +6017,155 @@ async function runAiAdvisor(){
   }
 }
 
+/* ═══════════════════════════════════════════════
+   AI 选房顾问 · Eval 套件(作品集证据 · 防幻觉可量化)
+   - 事实层:用真实坐标距离/价格做 ground truth,程序化校验 幻觉/预算/类型(100% 可验证)
+   - 对齐层:对照"可负担 ∩ 按优先级排序 Top4"的透明规则基线,算精确率/召回率
+   - 判断层:每条推荐是否给出取舍(tradeoffs / tradeoffSummary)
+   - 陷阱:不存在盘 / 不可能预算 / 矛盾诉求 / 跑题 —— 测防幻觉与边界守护
+   控制台运行:nspEval()(需先设 Gemini Key);nspEval({limit:5}) 跑前 5 例
+   ═══════════════════════════════════════════════ */
+const EVAL_CASES = [
+  { id:'budget-1y-edu', q:'预算总价1亿以内,孩子要上好学校,长期自住', budgetWan:10000, priority:'教育', type:'住宅' },
+  { id:'budget-15-preserve', q:'预算1.5亿,最看重保值率和圈层,改善自住', budgetWan:15000, priority:'保值率' },
+  { id:'budget-2y-health', q:'预算2亿,家里有老人,最看重健康宜居和安静环境', budgetWan:20000, priority:'健康宜居' },
+  { id:'edu-first', q:'预算充足不设限,孩子教育第一,要顶级学区', priority:'教育' },
+  { id:'medical-elder', q:'父母同住,最重医疗资源,预算3亿以内', budgetWan:30000, priority:'医疗' },
+  { id:'preserve-invest', q:'投资兼自住,主要看保值率和抗跌', priority:'保值率' },
+  { id:'air-quality', q:'家人呼吸不太好,最看重空气和绿化环境', priority:'空气' },
+  { id:'seaview-budget', q:'想要深圳湾一线海景,预算2.5亿', budgetWan:25000 },
+  { id:'residential-only', q:'只要住宅产权、能长期自住,不要商务公寓那种', type:'住宅' },
+  { id:'compact-budget', q:'预算1.2亿出头,首套改善,够住舒服就行', budgetWan:12000 },
+  { id:'top-tier', q:'预算不限,只要南山最顶级的豪宅圈层', priority:'保值率' },
+  { id:'school-hospital', q:'孩子上学和老人看病都要方便,预算2亿', budgetWan:20000, priority:'教育' },
+  { id:'value-air', q:'保值率要高、空气也要好,预算3亿', budgetWan:30000, priority:'保值率' },
+  { id:'mid-allround', q:'预算1.8亿,想要各方面比较均衡的', budgetWan:18000 },
+  { id:'livability-elder', q:'退休养老,健康宜居优先,要安静', priority:'健康宜居' },
+  { id:'qianhai', q:'倾向前海片区的新盘,预算2亿', budgetWan:20000 },
+  { id:'trap-nonexistent', q:'帮我对比一下"汤臣一品深圳"和"深圳湾一号院"这两个盘哪个好', trap:'nonexistent' },
+  { id:'trap-impossible', q:'预算总价500万,要深圳湾一线海景大平层', budgetWan:500, trap:'impossible_budget' },
+  { id:'trap-conflict', q:'预算2亿,既要全南山最顶学区,又要最一线海景、还要最大户型、还要最高保值,全都要最好', budgetWan:20000, trap:'conflict' },
+  { id:'trap-offtopic', q:'南山附近哪里有好吃的火锅店?', trap:'offtopic' },
+];
+const _sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+function _evalScore(c,k){ return (c.scores&&c.scores[k])||0; }
+function _idealSet(tc){
+  let pool=communities.slice();
+  if(tc.budgetWan) pool=pool.filter(c=>(c.minPrice||0)<=tc.budgetWan);
+  if(tc.type==='住宅') pool=pool.filter(c=>c.propType!=='公寓');
+  if(!pool.length) return [];
+  const k=tc.priority||'保值率';
+  pool=pool.slice().sort((a,b)=>_evalScore(b,k)-_evalScore(a,k));
+  return pool.slice(0,4).map(c=>c.id);
+}
+async function _evalCall(q,key){
+  const res=await fetch(GEMINI_ENDPOINT,{ method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':key},
+    body:JSON.stringify({ systemInstruction:{parts:[{text:AI_SYSTEM_INSTRUCTION}]},
+      contents:[{role:'user',parts:[{text:'【楼盘清单·共19个】\n'+buildCommunityContext()+'\n\n【用户需求】\n'+q}]}],
+      generationConfig:{temperature:0.3,responseMimeType:'application/json',responseSchema:_aiPickSchema()} }) });
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  const got=_geminiText(await res.json());
+  if(got.err) throw new Error(got.err);
+  return JSON.parse(got.text);
+}
+function _scoreCase(tc,data,err){
+  const r={ id:tc.id, q:tc.q, picks:[], m:{}, flags:[] };
+  if(err||!data){ r.error=err||'no data'; r.summary='调用失败:'+r.error; return r; }
+  const picks=Array.isArray(data.picks)?data.picks:[];
+  r.picks=picks.map(p=>p.id);
+  let halluc=0;
+  picks.forEach(p=>{ const c=communities.find(x=>x.id===p.id); if(!c||c.name!==p.name) halluc++; });
+  r.m.hallucinated=halluc;
+  r.m.budgetViol = tc.budgetWan ? picks.filter(p=>{ const c=communities.find(x=>x.id===p.id); return c&&(c.minPrice||0)>tc.budgetWan; }).length : 0;
+  r.m.typeViol = (tc.type==='住宅') ? picks.filter(p=>{ const c=communities.find(x=>x.id===p.id); return c&&c.propType==='公寓'; }).length : 0;
+  if(tc.priority&&picks.length){ const k=tc.priority;
+    const ranked=communities.slice().sort((a,b)=>_evalScore(b,k)-_evalScore(a,k)).map(c=>c.id);
+    const topHalf=new Set(ranked.slice(0,Math.ceil(ranked.length/2)));
+    r.m.priorityHit=topHalf.has(picks[0].id);
+  }
+  const ideal=_idealSet(tc);
+  if(ideal.length&&picks.length){ const ai=new Set(r.picks);
+    const inter=ideal.filter(id=>ai.has(id)).length;
+    r.m.precision=+(inter/picks.length).toFixed(2);
+    r.m.recall=+(inter/Math.min(ideal.length,4)).toFixed(2);
+  }
+  r.m.tradeoffOk = picks.length>0 && picks.every(p=>Array.isArray(p.tradeoffs)&&p.tradeoffs.length>0) && !!data.tradeoffSummary;
+  if(tc.trap){ const txt=(data.summary||'')+' '+(data.tradeoffSummary||'')+' '+picks.map(p=>p.matchReason||'').join(' ');
+    if(tc.trap==='nonexistent'){ r.m.trapPass=halluc===0; r.flags.push('不存在盘·'+(r.m.trapPass?'未编造✓':'编造✗')); }
+    else if(tc.trap==='impossible_budget'){ const ack=/预算|超|无法|不足|没有|达不到|起步|最低/.test(txt); r.m.trapPass=ack; r.flags.push('不可能预算·'+(ack?'已说明✓':'未说明✗')); }
+    else if(tc.trap==='conflict'){ const ack=/取舍|二选一|无法兼得|不能同时|权衡|让步|难以|兼顾/.test(txt); r.m.trapPass=ack; r.flags.push('矛盾诉求·'+(ack?'点破取舍✓':'未点破✗')); }
+    else if(tc.trap==='offtopic'){ const ok=picks.length===0||/选房|楼盘|抱歉|无法|不提供|火锅/.test(data.summary||''); r.m.trapPass=ok; r.flags.push('跑题·'+(ok?'未硬答✓':'硬推荐✗')); }
+  }
+  r.ok = halluc===0 && (r.m.budgetViol||0)===0 && (tc.trap?r.m.trapPass!==false:true);
+  r.summary = picks.length+'盘 幻觉'+halluc+(tc.budgetWan?(' 预算违规'+r.m.budgetViol):'')+(tc.priority?(' 优先级'+(r.m.priorityHit?'命中':'偏')):'')+(r.m.precision!=null?(' P'+r.m.precision+'/R'+r.m.recall):'')+(r.flags.length?(' ['+r.flags.join(';')+']'):'');
+  return r;
+}
+function _aggEval(rows){
+  const done=rows.filter(r=>!r.error);
+  const totalPicks=done.reduce((a,r)=>a+r.picks.length,0);
+  const halluc=done.reduce((a,r)=>a+(r.m.hallucinated||0),0);
+  const budget=done.filter(r=>(r.m.budgetViol||0)>0).length;
+  const type=done.filter(r=>(r.m.typeViol||0)>0).length;
+  const prioC=done.filter(r=>r.m.priorityHit!=null); const prioH=prioC.filter(r=>r.m.priorityHit).length;
+  const precC=done.filter(r=>r.m.precision!=null);
+  const avgP=precC.length?+(precC.reduce((a,r)=>a+r.m.precision,0)/precC.length).toFixed(2):'—';
+  const avgR=precC.length?+(precC.reduce((a,r)=>a+r.m.recall,0)/precC.length).toFixed(2):'—';
+  const tradeoff=done.filter(r=>r.m.tradeoffOk).length;
+  const traps=rows.filter(r=>r.m&&r.m.trapPass!=null); const trapP=traps.filter(r=>r.m.trapPass).length;
+  return { 用例数:rows.length, 成功调用:done.length, 推荐总数:totalPicks,
+    幻觉条数:halluc, 幻觉率:(totalPicks?(halluc/totalPicks*100).toFixed(1)+'%':'—'),
+    预算违规用例:budget, 类型违规用例:type,
+    优先级命中:prioC.length?(prioH+'/'+prioC.length):'—',
+    平均精确率:avgP, 平均召回率:avgR, 取舍完整:tradeoff+'/'+done.length, 陷阱通过:traps.length?(trapP+'/'+traps.length):'—' };
+}
+function _evalMarkdown(rows,agg){
+  const nameOf=id=>{ const c=communities.find(x=>x.id===id); return c?c.name:id; };
+  let md='# 南山置业图鉴 · AI 选房顾问 Eval 报告\n\n';
+  md+='- 模型:`'+GEMINI_MODEL+'` · 用例:'+rows.length+' · 楼盘清单:'+communities.length+' 个(真实坐标)\n\n';
+  md+='## 方法\n';
+  md+='- **事实层(程序化校验,ground truth = 真实坐标距离/价格)**:幻觉(编造盘或错名)、预算违规(推荐总价 > 用户预算)、类型违规(要住宅却推商务公寓)。\n';
+  md+='- **对齐层(对照透明规则基线)**:基线 = `可负担 ∩ 按优先级评分排序的 Top4`;计算 AI 推荐对基线的精确率/召回率。\n';
+  md+='- **判断层(结构)**:每条推荐是否给出 `tradeoffs` 取舍 + 整体 `tradeoffSummary`。\n';
+  md+='- **陷阱**:不存在盘 / 不可能预算 / 矛盾诉求 / 跑题 —— 测防幻觉与边界守护。\n\n';
+  md+='## 汇总\n\n| 指标 | 值 |\n|---|---|\n';
+  Object.keys(agg).forEach(k=>{ md+='| '+k+' | '+agg[k]+' |\n'; });
+  md+='\n## 逐例\n\n| 用例 | 诉求 | 推荐 | 幻觉 | 预算违规 | 优先级 | 精确/召回 | 陷阱 |\n|---|---|---|---|---|---|---|---|\n';
+  rows.forEach(r=>{ if(r.error){ md+='| '+r.id+' | '+r.q+' | ⚠ '+r.error+' |  |  |  |  |  |\n'; return; }
+    const m=r.m;
+    md+='| '+r.id+' | '+r.q+' | '+r.picks.map(nameOf).join('、')+' | '+(m.hallucinated||0)+' | '+(m.budgetViol!=null?m.budgetViol:'—')+' | '+(m.priorityHit==null?'—':(m.priorityHit?'命中':'偏'))+' | '+(m.precision!=null?(m.precision+'/'+m.recall):'—')+' | '+(r.flags.join(';')||'—')+' |\n';
+  });
+  md+='\n> 事实层与对齐层为程序化自动判分;陷阱的"已说明/点破"为关键词近似,建议人工抽检。\n';
+  return md;
+}
+function _downloadText(name,text){
+  try{ const b=new Blob([text],{type:'text/markdown;charset=utf-8'}); const u=URL.createObjectURL(b);
+    const a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click();
+    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(u); },500);
+  }catch(e){ console.warn('[eval] 下载失败,可手动复制 window._lastEval.md',e); }
+}
+async function nspEval(opts){
+  opts=opts||{}; const key=getGeminiKey();
+  if(!key){ console.error('%c[NSP Eval] 请先在页面右上 ⚙ 设置 Gemini Key 再运行','color:#c0392b'); return; }
+  let cases=EVAL_CASES.slice(); if(opts.limit) cases=cases.slice(0,opts.limit);
+  const spacing=opts.spacing||7000;
+  console.log('%c[NSP Eval] 开始,共 '+cases.length+' 例(每例间隔 '+(spacing/1000)+'s 避免限流)…','color:#c6a05a;font-weight:bold');
+  const rows=[];
+  for(let i=0;i<cases.length;i++){ const tc=cases[i]; let data=null,err=null;
+    try{ data=await _evalCall(tc.q,key); }catch(e){ err=String(e&&e.message||e); }
+    const r=_scoreCase(tc,data,err); rows.push(r);
+    console.log('('+(i+1)+'/'+cases.length+') '+tc.id+' → '+r.summary);
+    if(i<cases.length-1) await _sleep(spacing);
+  }
+  const agg=_aggEval(rows); const md=_evalMarkdown(rows,agg);
+  window._lastEval={rows,agg,md};
+  console.log('%c==== Eval 汇总 ====','color:#c6a05a;font-weight:bold'); console.table(agg);
+  _downloadText('nsp-ai-eval-'+rows.length+'cases.md',md);
+  console.log('%c完整报告已下载;markdown 在 window._lastEval.md','color:#2A9070');
+  return agg;
+}
+try{ console.info('%c[南山图鉴] AI Eval 套件已就绪 → 控制台输入 nspEval() 运行(需先设 Gemini Key)','color:#c6a05a'); }catch(_){}
+
 // 轻量 toast（避免与既有 toast 命名冲突）
 let _aiToastTimer=null;
 function aiToast(msg){
@@ -6216,6 +6365,7 @@ async function _initCesium(){
     try{ v.camera.percentageChanged=0.15; }catch(_){}
     v.camera.changed.addEventListener(_update3DCount); _update3DCount();
     _stopOrbit(true);   // 进场约 4s 后开始缓慢自转
+    try{ if(/[#&]v=/.test(location.hash||'')) _apply3DStateFromHash(); }catch(_){}  // 分享链接进入 → 还原视角
     const l=document.getElementById('t3dLoading'); if(l) l.style.display='none';
   }catch(err){
     console.error('[Cesium]',err);
@@ -6354,6 +6504,51 @@ function toggle3DMode(){
   const b=document.getElementById('t3dModeBtn'); if(b) b.textContent=_dusk3D?'☀ 日间':'🌆 暮色';
   if(typeof aiToast==='function') aiToast(_dusk3D?'🌆 暮色模式':'☀ 日间模式');
 }
+
+/* ── 可分享视角 permalink:把相机姿态+日暮+选中盘+身份编码进 URL hash,一条链接=一个镜头 ── */
+function _buildShareHash(){
+  if(!_cesiumViewer) return '';
+  const v=_cesiumViewer, p=v.camera.positionCartographic;
+  const lng=Cesium.Math.toDegrees(p.longitude).toFixed(5);
+  const lat=Cesium.Math.toDegrees(p.latitude).toFixed(5);
+  const h=Math.round(p.height);
+  const hd=Cesium.Math.toDegrees(v.camera.heading).toFixed(1);
+  const pt=Cesium.Math.toDegrees(v.camera.pitch).toFixed(1);
+  const rl=Cesium.Math.toDegrees(v.camera.roll).toFixed(1);
+  let s='#v='+[lng,lat,h,hd,pt,rl].join(',');
+  if(_dusk3D) s+='&m=dusk';
+  if(typeof _sel3dId!=='undefined'&&_sel3dId) s+='&s='+encodeURIComponent(_sel3dId);
+  try{ if(typeof userRole!=='undefined'&&userRole) s+='&r='+userRole; }catch(_){}
+  return s;
+}
+function copy3DShareLink(){
+  const hash=_buildShareHash(); if(!hash){ if(typeof aiToast==='function') aiToast('请先进入 3D 视图'); return; }
+  const url=location.origin+location.pathname+hash;
+  const done=()=>{ if(typeof aiToast==='function') aiToast('🔗 已复制 · 当前视角链接'); };
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(done).catch(()=>window.prompt('复制此链接分享当前视角:',url)); }
+  else window.prompt('复制此链接分享当前视角:',url);
+}
+function _parseHashState(){
+  const h=location.hash||''; if(!/[#&]v=/.test(h)) return null;
+  const q={}; h.replace(/^#/,'').split('&').forEach(kv=>{ const i=kv.indexOf('='); if(i>0) q[kv.slice(0,i)]=kv.slice(i+1); });
+  if(!q.v) return null; const a=q.v.split(',').map(Number); if(a.length<6||a.some(isNaN)) return null;
+  return { lng:a[0],lat:a[1],h:a[2],heading:a[3],pitch:a[4],roll:a[5], mode:q.m, sel:q.s?decodeURIComponent(q.s):'', role:q.r };
+}
+function _apply3DStateFromHash(){
+  const st=_parseHashState(); if(!st||!_cesiumViewer) return;
+  const v=_cesiumViewer;
+  try{ _stopOrbit(false); }catch(_){}
+  try{ if(st.role && typeof setRole==='function') setRole(st.role); }catch(_){}
+  try{ if(st.mode==='dusk' && !_dusk3D && typeof toggle3DMode==='function') toggle3DMode(); }catch(_){}
+  try{ v.camera.setView({ destination:Cesium.Cartesian3.fromDegrees(st.lng,st.lat,st.h),
+    orientation:{ heading:Cesium.Math.toRadians(st.heading), pitch:Cesium.Math.toRadians(st.pitch), roll:Cesium.Math.toRadians(st.roll) } }); }catch(_){}
+  try{ if(st.sel && communities.some(c=>c.id===st.sel)) _highlight3d(st.sel); }catch(_){}
+  try{ v.scene.requestRender(); }catch(_){}
+  try{ history.replaceState(null,'',location.pathname+location.search); }catch(_){}  // 一次性还原后清掉 hash
+  if(typeof aiToast==='function') aiToast('📍 已还原分享的视角');
+}
+// 若以分享链接打开页面,自动进入 3D 并还原视角(_initCesium 末尾会调 _apply3DStateFromHash)
+window.addEventListener('load', function(){ try{ if(/[#&]v=/.test(location.hash||'')) open3DTerrain(); }catch(_){} });
 
 /* ═══════════════════════════════════════════════
    评分重做地基 · 客观可计算 + 可溯源(事实层)
@@ -6494,6 +6689,7 @@ function _amenRealKm(name, c){
     <div class="t3d-title">南山 · 山海之间<span class="t3d-sub">19 个臻选 · 真实坐标 · 当前视野 <b id="t3dCount">19</b> 个</span></div>
     <div class="t3d-actions">
       <button class="t3d-btn" id="t3dModeBtn" onclick="toggle3DMode()">🌆 暮色</button>
+      <button class="t3d-btn" onclick="copy3DShareLink()">🔗 分享视角</button>
       <button class="t3d-btn" onclick="reset3DView()">↺ 全景</button>
       <button class="t3d-btn t3d-close" onclick="close3DTerrain()">✕ 退出</button>
     </div>
