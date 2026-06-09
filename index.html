@@ -1971,6 +1971,15 @@ body.role-buyer .agent-only{display:none!important;}
 .t3d-picks{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:5;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:74%;}
 .t3d-picks button{background:rgba(20,16,10,.6);color:#F4EFE6;border:1px solid rgba(184,146,58,.42);border-radius:18px;padding:7px 14px;font-family:'Noto Serif SC',serif;font-size:12px;cursor:pointer;backdrop-filter:blur(8px);transition:.2s;white-space:nowrap;}
 .t3d-picks button:hover{background:rgba(184,146,58,.85);color:#fff;transform:translateY(-1px);}
+.t3d-title{font-family:'Playfair Display','Noto Serif SC',serif;}
+.t3d-sub b{color:#E8C77A;font-weight:700;}
+.t3d-card{position:absolute;z-index:7;min-width:168px;max-width:232px;padding:12px 14px;background:rgba(18,15,10,.92);border:1px solid rgba(184,146,58,.5);border-radius:12px;backdrop-filter:blur(10px);box-shadow:0 12px 32px rgba(0,0,0,.5);color:#F4EFE6;font-family:'Noto Serif SC',serif;opacity:0;transform:translateY(6px);transition:opacity .16s ease,transform .16s ease;pointer-events:none;display:none;}
+.t3d-card.show{opacity:1;transform:translateY(0);}
+.t3d-card .nm{font-size:15px;font-weight:700;letter-spacing:.02em;color:#fff;line-height:1.2;}
+.t3d-card .pl{font-size:11px;color:rgba(228,218,200,.7);margin-top:3px;}
+.t3d-card .pr{font-size:13px;color:#E8C77A;margin-top:8px;letter-spacing:.02em;}
+.t3d-card .ds{font-size:11.5px;color:rgba(228,218,200,.86);margin-top:8px;line-height:1.55;}
+.t3d-card .ht{font-size:10px;color:rgba(184,146,58,.9);margin-top:9px;letter-spacing:.1em;}
 
 </style>
 </head>
@@ -6070,7 +6079,7 @@ function _injectCesium(cb){
 function open3DTerrain(){
   const overlay=document.getElementById('terrain3d');
   overlay.classList.add('open');
-  if(_cesiumViewer){ try{ _cesiumViewer.useDefaultRenderLoop=true; _cesiumViewer.resize(); }catch(_){} } // 恢复渲染
+  if(_cesiumViewer){ try{ _cesiumViewer.useDefaultRenderLoop=true; _cesiumViewer.resize(); _stopOrbit(true); }catch(_){} } // 恢复渲染 + 安排自转
   const ld=document.getElementById('t3dLoading'); if(ld && !_cesiumViewer) ld.style.display='flex';
   _injectCesium(async ()=>{ await _initCesium();
     // 2D↔3D 联动:若当前有选中楼盘,进 3D 直接飞到它并高亮
@@ -6080,7 +6089,8 @@ function open3DTerrain(){
 // 关闭仅隐藏 + 暂停渲染循环(省 GPU);刻意不 destroy:viewer 是单例复用,destroy 会让重开需重建地形/重新流式加载瓦片,明显变慢。开 3D 时再 useDefaultRenderLoop=true 恢复。
 function close3DTerrain(){
   document.getElementById('terrain3d').classList.remove('open');
-  if(_cesiumViewer){ try{ _cesiumViewer.useDefaultRenderLoop=false; }catch(_){} } // 后台暂停渲染,不空跑 GPU
+  if(_cesiumViewer){ try{ _stopOrbit(false); _cesiumViewer.useDefaultRenderLoop=false; }catch(_){} } // 停自转 + 后台暂停渲染
+  const _cd=document.getElementById('t3dCard'); if(_cd) _cd.classList.remove('show');
 }
 
 async function _initCesium(){
@@ -6116,6 +6126,13 @@ async function _initCesium(){
         v.shadowMap.size=2048;              // 阴影贴图分辨率
         v.shadowMap.maximumDistance=15000;  // 限制阴影渲染距离,省性能
       }
+    }catch(_){}
+    // —— 氛围:Bloom 辉光(偏置到只让高光发亮:海面反光/亮楼面)+ 天空大气增强 → 电影高级感
+    try{
+      const _bloom=v.scene.postProcessStages.bloom;
+      if(_bloom){ _bloom.enabled=true; _bloom.uniforms.glowOnly=false; _bloom.uniforms.contrast=128;
+        _bloom.uniforms.brightness=-0.5; _bloom.uniforms.delta=1.0; _bloom.uniforms.sigma=2.6; _bloom.uniforms.stepSize=1.2; }
+      if(v.scene.skyAtmosphere) v.scene.skyAtmosphere.brightnessShift=0.12;
     }catch(_){}
     // 高清影像:两层叠加。底层 Esri(免 key、全球可用,作兜底);顶层天地图(国内源、深圳更清、无偏移),
     // 仅在配了 tk 时叠加;天地图域名未授权/请求失败处,该瓦片自动露出下方 Esri → 本地与线上都不会黑。
@@ -6192,6 +6209,13 @@ async function _initCesium(){
     v.scene.requestRender();
     reset3DView();
     _build3DPicks();
+    // Vibe 强化挂钩:hover 详情卡 / 空闲自转 / 实时计数(参考"如果地球是一座花园")
+    v.screenSpaceEventHandler.setInputAction((mv)=>_on3DHover(mv.endPosition), Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+    ['pointerdown','wheel','touchstart'].forEach(ev=> v.scene.canvas.addEventListener(ev, ()=>_stopOrbit(true), {passive:true}));
+    v.clock.onTick.addEventListener(_orbitOnTick);
+    try{ v.camera.percentageChanged=0.15; }catch(_){}
+    v.camera.changed.addEventListener(_update3DCount); _update3DCount();
+    _stopOrbit(true);   // 进场约 4s 后开始缓慢自转
     const l=document.getElementById('t3dLoading'); if(l) l.style.display='none';
   }catch(err){
     console.error('[Cesium]',err);
@@ -6202,6 +6226,7 @@ async function _initCesium(){
 
 function reset3DView(){
   if(!_cesiumViewer) return;
+  _stopOrbit(true);   // 全景=用户操作:先停自转/解锁,再飞;4s 后恢复
   // 南山中心(GCJ约113.95,22.50)→ WGS-84,相机从东南高空俯瞰,露出山海格局
   const [clng,clat]=gcj02ToWgs84(113.95,22.50);
   _cesiumViewer.camera.flyTo({
@@ -6220,6 +6245,7 @@ function _highlight3d(id){
 }
 function flyToCommunity3D(id){
   const c=communities.find(x=>x.id===id); if(!c||!_cesiumViewer) return;
+  _stopOrbit(true);   // 飞临=用户操作:先停自转/解锁相机,避免 lookAtTransform 锁定下 flyTo 异常
   const [wlng,wlat]=gcj02ToWgs84(c.lng,c.lat);
   _cesiumViewer.camera.flyTo({
     destination:Cesium.Cartesian3.fromDegrees(wlng, wlat-0.011, 2000),
@@ -6234,6 +6260,58 @@ function _build3DPicks(){
   const top=[...communities].sort((a,b)=>b.price-a.price).slice(0,6);
   el.innerHTML='<span style="color:rgba(228,218,200,.7);font-size:11px;align-self:center;margin-right:2px">飞览:</span>'
     + top.map(c=>`<button onclick="flyToCommunity3D('${c.id}')">${c.name}</button>`).join('');
+}
+
+/* ── Vibe 强化:实时计数 + 空闲慢自转 + hover 详情卡(参考"如果地球是一座花园"那条:真实坐标×诗意×暗色极简交互) ── */
+let _orbit3D=false,_orbitTimer=null,_orbitTransform=null,_hoverId=null;
+const _ORBIT_SPEED=0.0011;   // rad/帧,约 90s 一圈,克制不晕
+// 当前镜头视野内的楼盘数(副标题实时计数,随镜头/自转变化)
+function _update3DCount(){
+  if(!_cesiumViewer) return;
+  let n=0; const r=_cesiumViewer.camera.computeViewRectangle();
+  if(r){ communities.forEach(c=>{ const w=gcj02ToWgs84(c.lng,c.lat);
+    const lo=Cesium.Math.toRadians(w[0]),la=Cesium.Math.toRadians(w[1]);
+    if(lo>=r.west&&lo<=r.east&&la>=r.south&&la<=r.north) n++; }); } else n=communities.length;
+  const el=document.getElementById('t3dCount'); if(el) el.textContent=n;
+}
+// 空闲慢自转:绕南山本地竖轴做"转台"环绕;锁进 ENU 坐标系保留当前机位,无操作 4s 后启动
+function _orbitOnTick(){ if(_orbit3D&&_cesiumViewer){ try{ _cesiumViewer.camera.rotate(Cesium.Cartesian3.UNIT_Z,_ORBIT_SPEED); }catch(_){ _stopOrbit(false); } } }
+function _startOrbit(){ if(!_cesiumViewer||_orbit3D) return;
+  if(!_orbitTransform){ const w=gcj02ToWgs84(113.95,22.50);
+    _orbitTransform=Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(w[0],w[1])); }
+  try{ _cesiumViewer.camera.lookAtTransform(_orbitTransform); _orbit3D=true; }catch(_){}
+}
+function _stopOrbit(resume){
+  if(_cesiumViewer&&_orbit3D){ _orbit3D=false; try{ _cesiumViewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){} } // 解锁,恢复手动控制
+  if(_orbitTimer){ clearTimeout(_orbitTimer); _orbitTimer=null; }
+  if(resume!==false) _orbitTimer=setTimeout(_startOrbit,4200);
+}
+// hover 高亮:被指楼盘点放大描金,其余回到默认/选中态(与 _highlight3d 一致)
+function _hoverHighlight(id){
+  if(!_cesiumViewer) return;
+  _cesiumViewer.entities.values.forEach(e=>{ if(!e._cid||!e.point) return;
+    const isH=(e._cid===id),isS=(e._cid===_sel3dId);
+    e.point.pixelSize=isH?17:(isS?22:11);
+    e.point.outlineWidth=(isH||isS)?4:2;
+    e.point.outlineColor=(isH||isS)?Cesium.Color.fromCssColorString('#FFD479'):Cesium.Color.WHITE; });
+}
+// 鼠标移到楼盘点 → 暗色详情卡(名字/板块/价/卖点)跟随光标;移开收起。卡片 pointer-events:none,不挡点击飞临
+function _on3DHover(pos){
+  const v=_cesiumViewer,card=document.getElementById('t3dCard'); if(!v||!card) return;
+  const picked=v.scene.pick(pos);
+  const id=(picked&&picked.id&&picked.id._cid)?picked.id._cid:null;
+  if(!id){ if(_hoverId){ _hoverId=null; _hoverHighlight(null); } card.classList.remove('show'); v.scene.canvas.style.cursor='default'; return; }
+  v.scene.canvas.style.cursor='pointer';
+  if(id!==_hoverId){ _hoverId=id; _hoverHighlight(id);
+    const c=communities.find(x=>x.id===id);
+    if(c){ const sub=(c.plate||'')+(c.tierLabel?' · '+c.tierLabel:(c.tier?' · '+c.tier+' 级':''));
+      const sell=c.tagline||(c.tags&&c.tags.pro&&c.tags.pro[0])||'';
+      const meta=c.price+' 万/㎡'+(c.size?'  ·  '+c.size:'');
+      card.innerHTML='<div class="nm">'+c.name+'</div><div class="pl">'+sub+'</div><div class="pr">'+meta+'</div>'+(sell?'<div class="ds">'+sell+'</div>':'')+'<div class="ht">点击 · 飞临看山海</div>';
+      card.style.display='block'; requestAnimationFrame(()=>card.classList.add('show')); } }
+  const pad=16,w=card.offsetWidth||210,h=card.offsetHeight||120; let x=pos.x+pad,y=pos.y-12;
+  if(x+w>window.innerWidth-10) x=pos.x-w-pad; if(y+h>window.innerHeight-10) y=window.innerHeight-h-10; if(y<10) y=10;
+  card.style.left=x+'px'; card.style.top=y+'px';
 }
 
 /* ═══════════════════════════════════════════════
@@ -6372,7 +6450,7 @@ function _amenRealKm(name, c){
 <div id="terrain3d" class="terrain3d">
   <div id="cesiumContainer" class="cesium-container"></div>
   <div class="t3d-topbar">
-    <div class="t3d-title">🏔 3D 山海格局 · 南山<span class="t3d-sub">真实地形 · 卫星影像 · 自由环绕</span></div>
+    <div class="t3d-title">南山 · 山海之间<span class="t3d-sub">19 个臻选 · 真实坐标 · 当前视野 <b id="t3dCount">19</b> 个</span></div>
     <div class="t3d-actions">
       <button class="t3d-btn" onclick="reset3DView()">↺ 全景</button>
       <button class="t3d-btn t3d-close" onclick="close3DTerrain()">✕ 退出</button>
@@ -6380,6 +6458,7 @@ function _amenRealKm(name, c){
   </div>
   <div id="t3dLoading" class="t3d-loading"><div class="t3d-spin"></div><div class="t3d-loadtext">正在加载真实地形与卫星影像…</div></div>
   <div id="t3dPicks" class="t3d-picks"></div>
+  <div id="t3dCard" class="t3d-card"></div>
 </div>
 </body>
 </html>
