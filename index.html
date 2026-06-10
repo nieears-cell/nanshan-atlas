@@ -1986,6 +1986,11 @@ body.role-buyer .agent-only{display:none!important;}
 .t3d-tour .tour-meta{font-size:11px;color:rgba(228,218,200,.6);margin-top:9px;letter-spacing:.1em;}
 .t3d-tour .tour-skip-link{color:#E8C77A;cursor:pointer;text-decoration:underline;}
 .t3d-tour .tour-skip{margin-top:11px;background:rgba(184,146,58,.85);color:#fff;border:none;border-radius:18px;padding:7px 20px;font-family:'Noto Serif SC',serif;font-size:13px;cursor:pointer;}
+.t3d-src{position:absolute;right:14px;bottom:10px;z-index:6;font-size:10px;color:rgba(228,218,200,.55);cursor:pointer;font-family:'Noto Serif SC',serif;letter-spacing:.06em;user-select:none;}
+.t3d-src:hover{color:rgba(232,199,122,.9);}
+.t3d-src .t3d-src-card{display:none;position:absolute;right:0;bottom:22px;width:300px;padding:12px 14px;background:rgba(18,15,10,.94);border:1px solid rgba(184,146,58,.45);border-radius:10px;font-size:11px;line-height:1.8;color:rgba(244,239,230,.92);text-align:left;box-shadow:0 10px 28px rgba(0,0,0,.5);}
+.t3d-src .t3d-src-card b{color:#E8C77A;}
+.t3d-src.open .t3d-src-card{display:block;}
 
 </style>
 </head>
@@ -5789,6 +5794,10 @@ const AI_SYSTEM_INSTRUCTION = `你是「南山置业图鉴」的 AI 选房顾问
 fitScore（0–100）= 综合匹配度（主观判断，非成交概率）。
 tradeoffSummary：一句话点破"用户的诉求里哪些能全得、哪些必须二选一"，体现你的权衡思路——这是你不可替代的地方。
 
+【敢于否决】
+若用户点名/暗示的楼盘或方向其实不匹配其诉求，直接说"这个盘不适合你"，并给出基于清单真实数字的理由。
+宁可只推 1-2 个、甚至 0 个，也不硬凑 4 个。会说"不"，你才可信。
+
 【输出】
 严格按 JSON schema，不要 markdown、不要多余文字。
 matchReason 一句话总括为什么推。summary 一句整体思路。caveat 固定提醒：评分含距离实测与综合判断、AI 建议仅供参考、需实勘核实。
@@ -6301,7 +6310,7 @@ async function _initCesium(){
     }catch(_){}
     // —— 镜头化后期:暗角聚焦 + 暗部暖金 tint + 极轻 film grain,把"地图"推成"镜头"(盖住 OSM 体块的塑料感)
     try{
-      const _lens=new Cesium.PostProcessStage({
+      _lensStage=new Cesium.PostProcessStage({
         fragmentShader:
           'uniform sampler2D colorTexture;\n'+
           'in vec2 v_textureCoordinates;\n'+
@@ -6323,8 +6332,36 @@ async function _initCesium(){
           '}\n',
         uniforms:{ u_strength:0.9, u_tint:new Cesium.Cartesian3(1.0,0.9,0.72), u_grain:0.035, u_time:function(){ return (performance.now()/1000.0)%120.0; } }
       });
-      v.scene.postProcessStages.add(_lens);
+      v.scene.postProcessStages.add(_lensStage);
     }catch(e){ console.warn('[lens]',e); }
+    // —— 真实感升级包:数据天花板之外的"光·水·空气"层(均挂画质开关,⚡流畅模式自动关) ——
+    try{ v.scene.highDynamicRange=true; }catch(_){}   // HDR:更接近真实相机的光响应
+    try{ // 真实水面:深圳湾动态水波 + 阳光镜面反射。保守内缩多边形(只盖确定是海的区域);若有偏差会被地形盖住=隐形失败,不会穿帮。待视觉校准后再外扩到贴岸。
+      const _SEA=[[113.935,22.470],[113.985,22.480],[114.000,22.455],[113.970,22.425],[113.925,22.440],[113.930,22.462]];
+      const flat=[]; _SEA.forEach(p=>{ const w=gcj02ToWgs84(p[0],p[1]); flat.push(w[0],w[1]); });
+      _waterPrim=v.scene.primitives.add(new Cesium.Primitive({
+        geometryInstances:new Cesium.GeometryInstance({ geometry:new Cesium.PolygonGeometry({
+          polygonHierarchy:new Cesium.PolygonHierarchy(Cesium.Cartesian3.fromDegreesArray(flat)),
+          height:1.0, vertexFormat:Cesium.EllipsoidSurfaceAppearance.VERTEX_FORMAT }) }),
+        appearance:new Cesium.EllipsoidSurfaceAppearance({ material:new Cesium.Material({ fabric:{ type:'Water', uniforms:{
+          baseWaterColor:new Cesium.Color(0.12,0.30,0.38,0.86),
+          normalMap:Cesium.buildModuleUrl('Assets/Textures/waterNormals.jpg'),
+          frequency:6000.0, animationSpeed:0.015, amplitude:4.0, specularIntensity:0.55 } } }) }),
+        asynchronous:false }));
+    }catch(e){ console.warn('[water]',e); }
+    try{ // 体积云:山脊与湾区上空三朵积云,给天空层次(位置粗摆,待截图校准)
+      _cloudCol=v.scene.primitives.add(new Cesium.CloudCollection({ noiseDetail:16 }));
+      [[113.921,22.487,1500,2600,750],[113.958,22.586,1700,3000,850],[113.950,22.450,1300,2200,650]].forEach(c=>{
+        const w=gcj02ToWgs84(c[0],c[1]);
+        _cloudCol.add({ position:Cesium.Cartesian3.fromDegrees(w[0],w[1],c[2]), scale:new Cesium.Cartesian2(c[3],c[4]),
+          maximumSize:new Cesium.Cartesian3(52,14,18), slice:0.40, brightness:1.0 });
+      });
+    }catch(e){ console.warn('[clouds]',e); }
+    try{ // 镜头光晕:太阳入画时的电影光斑(黄金时刻朝西北看)
+      _lensFlare=Cesium.PostProcessStageLibrary.createLensFlareStage();
+      _lensFlare.uniforms.intensity=1.6; _lensFlare.uniforms.dirtAmount=0.25; _lensFlare.uniforms.haloWidth=0.4;
+      v.scene.postProcessStages.add(_lensFlare);
+    }catch(e){ console.warn('[lensflare]',e); }
     // 高清影像:两层叠加。底层 Esri(免 key、全球可用,作兜底);顶层天地图(国内源、深圳更清、无偏移),
     // 仅在配了 tk 时叠加;天地图域名未授权/请求失败处,该瓦片自动露出下方 Esri → 本地与线上都不会黑。
     try{
@@ -6357,6 +6394,39 @@ async function _initCesium(){
         ]}
       });
       v.scene.primitives.add(osm); _osmTileset=osm;   // 存引用:日/暮切换要重着色
+      try{ // 程序化立面:侧墙生成窗格(玻璃压暗);暮色时 ~45% 窗户随机点暖灯("万家灯火",配 Bloom 发光)。楼的"真实感"最后一大档。
+        _facadeShader=new Cesium.CustomShader({
+          mode:Cesium.CustomShaderMode.MODIFY_MATERIAL,
+          uniforms:{ u_dusk:{ type:Cesium.UniformType.FLOAT, value:0.0 } },
+          varyings:{ v_nspPos:Cesium.VaryingType.VEC3, v_nspNrm:Cesium.VaryingType.VEC3 },   // positionMC/normalMC 在片元不可用,必须经顶点着色器传 varying
+          vertexShaderText:
+            'void vertexMain(VertexInput vsInput, inout czm_modelVertexOutput vsOutput){\n'+
+            '  v_nspPos=vsInput.attributes.positionMC;\n'+
+            '  v_nspNrm=vsInput.attributes.normalMC;\n'+
+            '}\n',
+          fragmentShaderText:
+            'float nspHash(vec2 p){ vec3 p3=fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }\n'+
+            'void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material){\n'+
+            '  vec3 pos=v_nspPos;\n'+
+            '  vec3 n=normalize(v_nspNrm);\n'+
+            '  float wall=1.0-abs(n.z);\n'+                                     // 侧墙≈1,屋顶≈0
+            '  if(wall>0.6){\n'+
+            '    vec2 uv;\n'+
+            '    uv.y=pos.z/3.1;\n'+                                            // 层高 ~3.1m
+            '    uv.x=(abs(n.x)>abs(n.y)?pos.y:pos.x)/2.6;\n'+                  // 沿立面水平方向,开间 ~2.6m
+            '    vec2 cell=floor(uv); vec2 f=fract(uv);\n'+
+            '    float isWin=step(0.18,f.x)*step(f.x,0.82)*step(0.25,f.y)*step(f.y,0.80);\n'+
+            '    vec3 glass=material.diffuse*0.55+vec3(0.08,0.10,0.12);\n'+     // 日间窗=深一档的玻璃色
+            '    material.diffuse=mix(material.diffuse,glass,isWin*0.55);\n'+
+            '    float lit=step(0.55,nspHash(cell))*u_dusk;\n'+                 // 暮色 ~45% 窗点灯
+            '    vec3 warm=vec3(1.0,0.78,0.45)*(0.55+0.45*nspHash(cell+7.7));\n'+
+            '    material.emissive+=warm*isWin*lit*0.9;\n'+
+            '  }\n'+
+            '}\n'
+        });
+        osm.customShader=_facadeShader;
+        osm.maximumScreenSpaceError=10;   // 建筑 LOD 加密一档(默认16):远处楼更早进高细节
+      }catch(e){ console.warn('[facade]',e); }
     }catch(e){ console.warn('[OSM buildings]',e); }
     // 19 个楼盘 → 转 WGS-84 → 贴地标注
     communities.forEach(c=>{
@@ -6408,6 +6478,7 @@ async function _initCesium(){
     v.camera.changed.addEventListener(_update3DCount); _update3DCount();
     try{ _addPulseHalos(); }catch(_){}   // 楼盘呼吸光晕
     _stopOrbit(true);   // 进场约 4s 后开始缓慢自转
+    _applyQuality();    // 应用画质/流畅偏好(localStorage 记忆)
     try{ if(/[#&]v=/.test(location.hash||'')) _apply3DStateFromHash(); }catch(_){}  // 分享链接进入 → 还原视角
     const l=document.getElementById('t3dLoading'); if(l) l.style.display='none';
   }catch(err){
@@ -6508,37 +6579,42 @@ function _on3DHover(pos){
 }
 
 /* ── 日 / 暮 模式:暮色压暗卫星图 + 暗天空 + 高楼染暖金(配 Bloom 像点亮塔冠)+ 环境光遮蔽,贴近"深空暗调"参考 ── */
-let _dusk3D=false,_osmTileset=null;
+let _dusk3D=false,_osmTileset=null,_lensStage=null,_waterPrim=null,_cloudCol=null,_lensFlare=null,_facadeShader=null;
 function _styleBuildings(dusk){
   if(!_osmTileset) return;
   _osmTileset.style=new Cesium.Cesium3DTileStyle({
     defines:{ h:"${feature['cesium#estimatedHeight']}" },
     color:{ conditions: dusk ? [
-      ["${h} >= 150","color('#f0c074')"],   // 高楼暖金:暮色里像点亮的塔冠,Bloom 会发光
-      ["${h} >= 90","color('#6b5f7e')"],
-      ["${h} >= 45","color('#3c3a52')"],
-      ["true","color('#2c2b3c')"]            // 矮楼冷暗
+      ["${h} >= 150","color('#f5c87e')"],   // 高楼暖金:暮色里像点亮的塔冠,Bloom 会发光
+      ["${h} >= 90","color('#9b8db0')"],    // 以下三档整体调亮(原版死黑,用户实测"啥也看不清"后重校为暮紫)
+      ["${h} >= 45","color('#6e6a8a')"],
+      ["true","color('#56536b')"]
     ] : [
-      ["${h} >= 180","color('#c6a05a')"],
-      ["${h} >= 100","color('#9aa7b8')"],
-      ["${h} >= 50","color('#828d9c')"],
-      ["true","color('#6f7a88')"]
+      ["${h} >= 180","color('#d8b370')"],   // 日间整体调浅:真实城市从空中看是浅色的(米白/暖灰/玻璃蓝),深灰蓝像"贴上去的模型"
+      ["${h} >= 100","color('#b9c3cd')"],
+      ["${h} >= 50","color('#c6c2b8')"],
+      ["true","color('#cfccc3')"]
     ]}
   });
 }
 function _apply3DMode(){
   const v=_cesiumViewer; if(!v) return; const dusk=_dusk3D;
   try{
-    // 太阳时刻:日间斜阳(≈16:00)/ 暮色(≈18:50 低斜阳,长影暖调)
-    v.clock.currentTime=Cesium.JulianDate.fromIso8601(dusk?'2026-06-09T10:50:00Z':'2026-06-09T08:00:00Z');
+    // 太阳时刻:日间斜阳(≈16:00)/ 暮色(≈18:00 黄金时刻。曾设 18:50,太阳近落山+多层压暗叠加="一片黑",用户实测反馈后整体调亮)
+    v.clock.currentTime=Cesium.JulianDate.fromIso8601(dusk?'2026-06-09T10:00:00Z':'2026-06-09T08:00:00Z');
     // 卫星影像压暗去饱和 → 暮/夜地表
     for(let i=0;i<v.imageryLayers.length;i++){ const L=v.imageryLayers.get(i);
-      L.brightness=dusk?0.4:1.0; L.saturation=dusk?0.55:1.0; L.gamma=dusk?0.95:1.0; }
+      L.brightness=dusk?0.62:1.0; L.saturation=dusk?0.72:1.0; L.gamma=1.0; }
     _styleBuildings(dusk);
-    if(v.scene.skyAtmosphere) v.scene.skyAtmosphere.brightnessShift=dusk?-0.35:0.12;
+    try{ if(_waterPrim){ const u=_waterPrim.appearance.material.uniforms;   // 暮色海面:深蓝 + 更亮的低角度镜面反光
+      u.baseWaterColor=dusk?new Cesium.Color(0.08,0.15,0.24,0.90):new Cesium.Color(0.12,0.30,0.38,0.86);
+      u.specularIntensity=dusk?0.95:0.55; } }catch(_){}
+    try{ if(_lensStage) _lensStage.uniforms.u_strength=dusk?0.5:0.9; }catch(_){}   // 暮色减弱暗角:别在已压暗的场景边缘再吃一圈黑
+    try{ if(_facadeShader) _facadeShader.setUniform('u_dusk', dusk?1.0:0.0); }catch(_){}   // 暮色点亮窗灯
+    if(v.scene.skyAtmosphere) v.scene.skyAtmosphere.brightnessShift=dusk?-0.12:0.12;
     // 环境光遮蔽:暮色下开(暗场里楼缝/接地的柔和暗角更出体积),日间关
     const ao=v.scene.postProcessStages.ambientOcclusion;
-    if(ao){ ao.enabled=dusk; ao.uniforms.intensity=3.0; ao.uniforms.lengthCap=0.5; ao.uniforms.stepSize=2.0; ao.uniforms.bias=0.12; }
+    if(ao){ ao.enabled=dusk&&_quality3D==='hq'; ao.uniforms.intensity=2.2; ao.uniforms.lengthCap=0.5; ao.uniforms.stepSize=2.0; ao.uniforms.bias=0.12; }
     v.scene.requestRender();
   }catch(_){}
 }
@@ -6546,6 +6622,35 @@ function toggle3DMode(){
   _dusk3D=!_dusk3D; _apply3DMode();
   const b=document.getElementById('t3dModeBtn'); if(b) b.textContent=_dusk3D?'☀ 日间':'🌆 暮色';
   if(typeof aiToast==='function') aiToast(_dusk3D?'🌆 暮色模式':'☀ 日间模式');
+}
+
+/* ── 画质/流畅开关:画质=2x渲染+MSAA+阴影+Bloom+镜头后期+光晕;流畅=全部关掉、1x 渲染——旧机器/现场演示不掉帧。偏好存 localStorage ── */
+let _quality3D='hq';
+try{ _quality3D=localStorage.getItem('nsp_quality')||'hq'; }catch(_){}
+function _applyQuality(){
+  const v=_cesiumViewer; if(!v) return; const hq=(_quality3D==='hq');
+  try{
+    v.useBrowserRecommendedResolution=!hq;          // hq=按设备像素(Retina 2x);流畅=1x
+    v.scene.msaaSamples=hq?2:1;                     // 流畅关 MSAA
+    v.shadows=hq;                                   // 流畅关阴影(整个渲染 pass)
+    const pp=v.scene.postProcessStages;
+    if(pp.bloom) pp.bloom.enabled=hq;
+    if(_lensStage) _lensStage.enabled=hq;           // 暗角/颗粒后期
+    if(pp.ambientOcclusion) pp.ambientOcclusion.enabled=hq&&_dusk3D;
+    v.entities.values.forEach(e=>{ if(e._halo) e.show=hq; });  // 19 个逐帧动画光晕
+    try{ v.scene.highDynamicRange=hq; }catch(_){}
+    if(_waterPrim) _waterPrim.show=hq;                          // 动态水面
+    if(_cloudCol) _cloudCol.show=hq;                            // 体积云
+    if(_lensFlare) _lensFlare.enabled=hq;                       // 镜头光晕
+    v.resize(); v.scene.requestRender();
+  }catch(_){}
+  const b=document.getElementById('t3dQualityBtn'); if(b) b.textContent=hq?'⚡ 流畅':'✨ 画质';  // 按钮显示"点了会切到什么"
+}
+function toggleQuality3D(){
+  _quality3D=(_quality3D==='hq')?'lite':'hq';
+  try{ localStorage.setItem('nsp_quality',_quality3D); }catch(_){}
+  _applyQuality();
+  if(typeof aiToast==='function') aiToast(_quality3D==='hq'?'✨ 已切到画质优先(更清晰)':'⚡ 已切到流畅优先(不掉帧)');
 }
 
 /* ── 可分享视角 permalink:把相机姿态+日暮+选中盘+身份编码进 URL hash,一条链接=一个镜头 ── */
@@ -6790,6 +6895,7 @@ function _amenRealKm(name, c){
   <div class="t3d-topbar">
     <div class="t3d-title">南山 · 山海之间<span class="t3d-sub">19 个臻选 · 真实坐标 · 当前视野 <b id="t3dCount">19</b> 个</span></div>
     <div class="t3d-actions">
+      <button class="t3d-btn" id="t3dQualityBtn" onclick="toggleQuality3D()" title="画质 / 流畅切换">⚡ 流畅</button>
       <button class="t3d-btn" id="t3dTourBtn" onclick="startTour()">▶ 导览</button>
       <button class="t3d-btn" id="t3dModeBtn" onclick="toggle3DMode()">🌆 暮色</button>
       <button class="t3d-btn" onclick="copy3DShareLink()">🔗 分享视角</button>
@@ -6801,6 +6907,7 @@ function _amenRealKm(name, c){
   <div id="t3dPicks" class="t3d-picks"></div>
   <div id="t3dCard" class="t3d-card"></div>
   <div id="t3dTour" class="t3d-tour"></div>
+  <div id="t3dSrc" class="t3d-src" onclick="this.classList.toggle('open')">ⓘ 数据口径<span class="t3d-src-card">坐标:高德 POI + GCJ-02→WGS-84 纠偏 · 地形:Cesium World Terrain · 影像:天地图(至 z18)/Esri · 建筑:OSM 公开数据,<b>高度为估算</b> · 评分:真实坐标距离计算,逐项可溯源 · AI 推荐:Gemini 生成,仅供参考,需实勘核实</span></div>
 </div>
 </body>
 </html>
