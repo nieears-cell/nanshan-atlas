@@ -1910,6 +1910,18 @@ body.immersive-active .peek-zone{display:block;}
 .ai-error{font-size:13px;color:var(--rust);line-height:1.7;padding:12px;background:rgba(138,74,42,.06);border:1px solid rgba(138,74,42,.2);border-radius:8px;}
 .ai-error button{margin-top:8px;font-size:12px;padding:5px 14px;border:1px solid var(--rust);background:none;color:var(--rust);border-radius:6px;cursor:pointer;}
 .ai-credit{font-family:'Courier Prime',monospace;font-size:8.5px;letter-spacing:.05em;color:var(--ink4);text-align:center;margin-top:14px;line-height:1.7;}
+/* Agent 执行轨迹:多步工具调用的可视化(面试演示核心) */
+.ai-trace{margin:10px 0 4px;border:1px solid rgba(184,146,58,.25);border-radius:9px;background:rgba(184,146,58,.04);overflow:hidden;}
+.ai-trace summary{cursor:pointer;font-family:'Courier Prime',monospace;font-size:10.5px;letter-spacing:.04em;color:var(--gold);padding:8px 12px;user-select:none;list-style:none;}
+.ai-trace summary::-webkit-details-marker{display:none;}
+.ai-trace-list{max-height:180px;overflow-y:auto;padding:2px 12px 9px;}
+.ai-tr-step{font-family:'Courier Prime',monospace;font-size:10.5px;color:var(--ink2);line-height:1.9;border-left:2px solid rgba(184,146,58,.35);padding-left:9px;margin:2px 0;animation:trIn .3s ease;}
+.ai-tr-step.think{color:var(--ink4);border-left-color:rgba(120,110,95,.25);}
+.ai-tr-step.warn{color:var(--rust);border-left-color:var(--rust);}
+.ai-tr-out{color:var(--ink4);}
+@keyframes trIn{from{opacity:0;transform:translateX(-4px);}to{opacity:1;transform:none;}}
+.ai-agent-toggle{display:flex;align-items:center;gap:5px;font-family:'Courier Prime',monospace;font-size:10.5px;color:var(--ink3);cursor:pointer;user-select:none;white-space:nowrap;flex-shrink:0;}
+.ai-agent-toggle input{accent-color:var(--gold);cursor:pointer;}
 /* AI 深化:命中/让步 + 话术 */
 .ai-pick2{background:var(--cream);border:1px solid var(--cream3);border-radius:9px;margin-bottom:10px;overflow:hidden;transition:.2s;}
 .ai-pick2:hover{border-color:var(--gold-b);}
@@ -5868,7 +5880,8 @@ function clearGeminiKey(){ try{ localStorage.removeItem('gemini_api_key'); }catc
 function toggleAiPanel(){
   const p=document.getElementById('aiPanel'); if(!p) return;
   const open=p.classList.toggle('open'); p.setAttribute('aria-hidden', open?'false':'true');
-  if(open){ const t=document.getElementById('aiQuery'); t&&t.focus(); }
+  if(open){ const t=document.getElementById('aiQuery'); t&&t.focus();
+    const chk=document.getElementById('agentModeChk'); if(chk&&typeof _agentMode!=='undefined') chk.checked=_agentMode; }
 }
 function fillAiQuery(btn){ const t=document.getElementById('aiQuery'); if(t){ t.value=btn.textContent.trim(); t.focus(); } }
 
@@ -5876,7 +5889,8 @@ function fillAiQuery(btn){ const t=document.getElementById('aiQuery'); if(t){ t.
 function setAiLoading(on){
   const btn=document.getElementById('aiGoBtn'); if(btn){ btn.disabled=on; btn.textContent=on?'匹配中…':'智能匹配 →'; }
   const res=document.getElementById('aiResult'); if(!res) return;
-  if(on){ res.innerHTML='<div class="ai-loading-txt">正在为您匹配图鉴内 19 个楼盘…</div><div class="ai-skeleton"></div><div class="ai-skeleton"></div><div class="ai-skeleton"></div>'; }
+  if(on){ const txt=(typeof _agentMode!=='undefined'&&_agentMode)?'🤖 Agent 工作中:规划 → 工具核实事实 → 权衡推荐…':'正在为您匹配图鉴内 19 个楼盘…';
+    res.innerHTML='<div class="ai-loading-txt">'+txt+'</div><div class="ai-skeleton"></div><div class="ai-skeleton"></div><div class="ai-skeleton"></div>'; }
 }
 function renderAdvisorError(msg, retry){
   const res=document.getElementById('aiResult'); if(!res) return;
@@ -5887,7 +5901,9 @@ function renderAdvisorError(msg, retry){
 function renderAdvisorResult(data){
   const res=document.getElementById('aiResult'); if(!res) return;
   const valid=(data.picks||[]).filter(p=>communities.find(c=>c.id===p.id)).slice(0,4); // 二次防幻觉
-  if(!valid.length){ renderAdvisorError('没有匹配到合适的楼盘，可调整预算或诉求再试。', true); return; }
+  if(!valid.length){ // 0 推荐时优先展示 AI 的如实说明(跑题/预算无解/诉求冲突),而非通用错误
+    const expl=String(data.summary||data.tradeoffSummary||'').replace(/</g,'&lt;');
+    renderAdvisorError(expl||'没有匹配到合适的楼盘，可调整预算或诉求再试。', !expl); return; }
   const esc=s=>String(s||'').replace(/</g,'&lt;');
   const cards=valid.map(p=>{
     const c=communities.find(x=>x.id===p.id);
@@ -5992,6 +6008,191 @@ function _showPitchModal(c, data, loading){
   m.classList.add('open');
 }
 
+/* ═══════════════════════════════════════════════
+   AI 选房 Agent · 多步工具调用(Gemini Function Calling)
+   - LLM 不算数字:筛选/测距/对比全部由本地工具基于真实坐标执行,AI 只负责规划与权衡
+   - 终结动作 submit_recommendation 的 id 仍是闭集枚举 → 防幻觉防线不变且前移到工具层
+   - 系统提示只给「目录」(名称+起价),评分/距离必须调工具查 → 逼出真·多步推理
+   - 失败自动回退单步直出(稳定版兜底);执行轨迹在面板可视化
+   ═══════════════════════════════════════════════ */
+let _agentMode=(function(){ try{ return localStorage.getItem('nsp_agent_mode')!=='off'; }catch(_){ return true; } })();
+function toggleAgentMode(el){ _agentMode=!!(el&&el.checked); try{ localStorage.setItem('nsp_agent_mode',_agentMode?'on':'off'); }catch(_){}
+  aiToast(_agentMode?'🤖 Agent 模式:多步工具调用核实后推荐':'⚡ 单步模式:一次调用直出'); }
+
+const AGENT_SYSTEM_PREFIX=`你是「南山置业图鉴」的 AI 选房 Agent,服务深圳南山区购房者。你必须通过调用工具查证事实,再给出推荐。
+
+【绝对规则·违反即失败】
+1. 只能推荐楼盘目录中的楼盘(共19个),严禁编造任何楼盘、价格、距离或评分。
+2. 所有数字(价格/距离/评分)必须来自工具返回结果,严禁凭记忆或猜测填写。
+3. 最终推荐必须、也只能通过 submit_recommendation 工具提交,不要用纯文本作答。
+4. 若用户预算低于所有楼盘起价、或诉求互相冲突,如实在 summary/tradeoffSummary 说明取舍;宁可少推甚至 0 推,不硬凑。
+5. 若用户问题与选房无关(跑题),直接 submit_recommendation 提交空 picks 并在 summary 礼貌说明只负责选房。
+
+【工作流程】
+1) 解析诉求(预算/学区/医疗/海景/产权/养老等) → 2) search_communities 按预算/类型筛候选 → 3) 用 get_community / measure_distance / compare_communities 核实关键事实 → 4) submit_recommendation 提交。
+要求精准高效,一般 3~6 次工具调用内完成;每个 matchHits 必须引用工具返回的真实数字;tradeoffs 诚实点出让步。敢于否决:不匹配就直说不适合。
+fitScore(0-100)=综合匹配度(主观判断);最多 4 个 picks,按 fitScore 降序;caveat 固定提醒:评分含距离实测与综合判断、AI 建议仅供参考、需实勘核实。`;
+
+function _compactMenu(){
+  return communities.map(c=>`[${c.id}] ${c.name}(${c.plate},总价${c.minPrice>=10000?(c.minPrice/10000).toFixed(1)+'亿':c.minPrice+'万'}起,${c.propType||'住宅'})`).join('\n');
+}
+function _submitParamsSchema(){
+  return { type:"OBJECT", properties:{
+    picks:{ type:"ARRAY", items:{ type:"OBJECT", properties:{
+      id:{ type:"STRING", enum:communities.map(c=>c.id) },
+      name:{ type:"STRING" }, matchReason:{ type:"STRING" }, fitScore:{ type:"INTEGER" },
+      matchHits:{ type:"ARRAY", items:{ type:"STRING" } }, tradeoffs:{ type:"ARRAY", items:{ type:"STRING" } }
+    }, required:["id","name","matchReason","fitScore","matchHits","tradeoffs"] }},
+    summary:{ type:"STRING" }, tradeoffSummary:{ type:"STRING" }, caveat:{ type:"STRING" }
+  }, required:["picks","summary","tradeoffSummary","caveat"] };
+}
+function _agentTools(){
+  const idEnum=communities.map(c=>c.id);
+  return [{ functionDeclarations:[
+    { name:'search_communities',
+      description:'按条件筛选楼盘,返回候选列表(含总价起/板块/产权/梯队)。预算单位:万元(如3000=3000万)。',
+      parameters:{ type:'OBJECT', properties:{
+        budgetWan:{ type:'NUMBER', description:'总价预算上限(万元)' },
+        propType:{ type:'STRING', enum:['住宅','公寓'], description:'产权类型;要落户/学位必须选住宅' },
+        plate:{ type:'STRING', description:'板块关键词,如 深圳湾/后海/前海/华侨城/蛇口/深超总' },
+        sortBy:{ type:'STRING', enum:['保值率','教育','医疗','空气','健康宜居','价格'], description:'排序维度(评分降序;价格为升序)' },
+        limit:{ type:'INTEGER', description:'最多返回个数,默认8' } } } },
+    { name:'get_community',
+      description:'查单个楼盘完整档案:价格/五维评分及依据/优势/风险/稀缺性/产权说明。',
+      parameters:{ type:'OBJECT', properties:{ id:{ type:'STRING', enum:idEnum } }, required:['id'] } },
+    { name:'measure_distance',
+      description:'基于真实坐标测某楼盘到目标的直线距离(km),可溯源。',
+      parameters:{ type:'OBJECT', properties:{
+        id:{ type:'STRING', enum:idEnum },
+        target:{ type:'STRING', enum:['海岸线','最近名校','最近医院','最近地铁','最近公园','最近山体'] } }, required:['id','target'] } },
+    { name:'compare_communities',
+      description:'横向对比2~6个楼盘:总价/五维评分/距海/最近名校医院地铁,返回对比表。',
+      parameters:{ type:'OBJECT', properties:{ ids:{ type:'ARRAY', items:{ type:'STRING', enum:idEnum } } }, required:['ids'] } },
+    { name:'submit_recommendation',
+      description:'提交最终推荐(终结动作)。只能在用工具核实事实后调用;id 限于楼盘目录闭集。跑题/无解时提交空 picks 并在 summary 说明。',
+      parameters:_submitParamsSchema() }
+  ]}];
+}
+// 工具执行器:全部本地纯函数,真实坐标计算,无网络
+function _execAgentTool(name,args){
+  args=args||{};
+  const fmtTotal=mp=> mp>=10000 ? (mp/10000).toFixed(1)+'亿' : (mp||0)+'万';
+  if(name==='search_communities'){
+    let pool=communities.slice();
+    if(args.budgetWan) pool=pool.filter(c=>(c.minPrice||0)<=args.budgetWan);
+    if(args.propType) pool=pool.filter(c=>(c.propType||'住宅')===args.propType);
+    if(args.plate) pool=pool.filter(c=>String(c.plate||'').indexOf(args.plate)>=0||String(c.name||'').indexOf(args.plate)>=0);
+    const k=args.sortBy;
+    if(k==='价格') pool.sort((a,b)=>(a.minPrice||0)-(b.minPrice||0));
+    else if(k) pool.sort((a,b)=>((b.scores&&b.scores[k])||0)-((a.scores&&a.scores[k])||0));
+    const lim=Math.max(1,Math.min(args.limit||8,19));
+    return { count:pool.length, matches:pool.slice(0,lim).map(c=>{
+      const row={ id:c.id, name:c.name, plate:c.plate, 总价起:fmtTotal(c.minPrice), 产权:c.propType||'住宅', 梯队:c.tierLabel||'' };
+      if(k&&k!=='价格') row[k]=(c.scores&&c.scores[k])||0;
+      return row; }) };
+  }
+  if(name==='get_community'){
+    const c=communities.find(x=>x.id===args.id); if(!c) return { error:'未找到该楼盘 id:'+args.id };
+    const s=c.scores||{}, b=c.scoreBasis||{};
+    return { id:c.id, name:c.name, plate:c.plate, 单价:(c.price||0)+'万/㎡', 总价起:fmtTotal(c.minPrice),
+      产权:(c.propType||'住宅')+(c.propNote?(' · '+c.propNote):''), 梯队:c.tierLabel||'', 定位:c.tagline||'',
+      评分:{ 保值率:s.保值率, 教育:s.教育, 医疗:s.医疗, 空气:s.空气, 健康宜居:s.健康宜居 },
+      评分依据:b, 优势:(c.tags&&c.tags.pro)||[], 风险:(c.tags&&c.tags.con)||[],
+      稀缺:c.scarcity?String(c.scarcity.text).replace(/<[^>]+>/g,''):'' };
+  }
+  if(name==='measure_distance'){
+    const c=communities.find(x=>x.id===args.id); if(!c) return { error:'未找到该楼盘 id:'+args.id };
+    if(args.target==='海岸线'){ let km=99; try{ km=seaDistKm(c); }catch(_){} return { 楼盘:c.name, 目标:'海岸线', 距离km:+km.toFixed(2), 说明:'直线距离,基于真实坐标' }; }
+    const map={ '最近名校':'schools','最近医院':'hospitals','最近地铁':'metro','最近公园':'parks','最近山体':'mountains' };
+    const list=NSP_POI[map[args.target]]; if(!list) return { error:'不支持的目标:'+args.target };
+    const r=nearestPOI(c,list);
+    return { 楼盘:c.name, 目标:args.target, 名称:r.name, 距离km:+r.km.toFixed(2), 说明:'直线距离,基于真实坐标' };
+  }
+  if(name==='compare_communities'){
+    const rows=(args.ids||[]).slice(0,6).map(id=>{
+      const c=communities.find(x=>x.id===id); if(!c) return { id:id, error:'未找到' };
+      const s=c.scores||{}; let sea=null; try{ sea=+seaDistKm(c).toFixed(1); }catch(_){}
+      const sch=nearestPOI(c,NSP_POI.schools), hosp=nearestPOI(c,NSP_POI.hospitals), met=nearestPOI(c,NSP_POI.metro);
+      return { id:c.id, name:c.name, 总价起:fmtTotal(c.minPrice), 产权:c.propType||'住宅',
+        保值率:s.保值率, 教育:s.教育, 医疗:s.医疗, 空气:s.空气, 健康宜居:s.健康宜居, 距海km:sea,
+        最近名校:sch.name+' '+sch.km.toFixed(1)+'km', 最近医院:hosp.name+' '+hosp.km.toFixed(1)+'km', 最近地铁:met.name+' '+met.km.toFixed(1)+'km' };
+    });
+    return { compare:rows };
+  }
+  return { error:'未知工具:'+name };
+}
+// Agent 主循环:规划→工具→观察→…→submit_recommendation;返回 {data, toolCalls}
+async function _agentLoop(q,key,opts){
+  opts=opts||{}; const onStep=opts.onStep||function(){};
+  const sys=AGENT_SYSTEM_PREFIX+'\n\n【楼盘目录·共19个(只含名称/板块/起价;评分与距离必须用工具查)】\n'+_compactMenu();
+  const contents=[{ role:'user', parts:[{ text:'【用户需求】\n'+q }] }];
+  const tools=_agentTools(); const maxRounds=opts.maxRounds||8;
+  let toolCalls=0;
+  const callApi=()=>fetch(GEMINI_ENDPOINT,{ method:'POST', headers:{ 'Content-Type':'application/json','x-goog-api-key':key },
+    body:JSON.stringify({ systemInstruction:{ parts:[{ text:sys }] }, contents, tools,
+      toolConfig:{ functionCallingConfig:{ mode:'AUTO' } }, generationConfig:{ temperature:0.3 } }) });
+  for(let round=1; round<=maxRounds; round++){
+    onStep({ type:'think', round });
+    let res=await callApi();
+    if(res.status===429){ onStep({ type:'wait' }); await _sleep(7000); res=await callApi(); }
+    if(!res.ok){ let d=''; try{ const e=await res.json(); d=(e&&e.error&&e.error.message)||''; }catch(_){}
+      throw new Error('HTTP '+res.status+(d?(' '+d.slice(0,90)):'')); }
+    const j=await res.json();
+    const cand=j&&j.candidates&&j.candidates[0];
+    if(!cand||!cand.content||!cand.content.parts) throw new Error('Agent 无有效回复'+(j&&j.promptFeedback&&j.promptFeedback.blockReason?('('+j.promptFeedback.blockReason+')'):''));
+    const parts=cand.content.parts;
+    const calls=parts.filter(p=>p.functionCall).map(p=>p.functionCall);
+    if(!calls.length){
+      const txt=parts.map(p=>p.text||'').join('');
+      try{ const d=JSON.parse(txt); if(d&&d.picks) return { data:d, toolCalls:toolCalls, viaText:true }; }catch(_){}
+      // 给模型一次纠偏机会:提醒必须走 submit_recommendation
+      if(round<maxRounds){ contents.push(cand.content); contents.push({ role:'user', parts:[{ text:'请通过 submit_recommendation 工具提交最终推荐,不要用纯文本作答。' }] }); continue; }
+      throw new Error('Agent 未通过 submit_recommendation 提交');
+    }
+    const submit=calls.find(fc=>fc.name==='submit_recommendation');
+    if(submit){ toolCalls++;
+      const d=submit.args||{};
+      if(!Array.isArray(d.picks)) throw new Error('提交结构不完整');
+      d.picks=d.picks.filter(p=>p&&communities.find(c=>c.id===p.id)).map(p=>{ const c=communities.find(x=>x.id===p.id); p.name=c.name; return p; }); // 闭集校验+名称归一
+      onStep({ type:'call', name:'submit_recommendation', args:d, result:{ ok:true } });
+      return { data:d, toolCalls:toolCalls };
+    }
+    contents.push(cand.content); // 原样回填(保留 thought 签名等)
+    const resp=[];
+    for(const fc of calls){ toolCalls++;
+      let out; try{ out=_execAgentTool(fc.name,fc.args||{}); }catch(e){ out={ error:String(e&&e.message||e) }; }
+      onStep({ type:'call', name:fc.name, args:fc.args||{}, result:out });
+      resp.push({ functionResponse:{ name:fc.name, response:(out&&typeof out==='object'&&!Array.isArray(out))?out:{ result:out } } });
+    }
+    contents.push({ role:'user', parts:resp });
+  }
+  throw new Error('超出最大轮次('+maxRounds+')');
+}
+// ── 执行轨迹可视化 ──
+function _traceReset(){ const t=document.getElementById('aiTrace'); if(t) t.innerHTML=''; }
+function _traceStep(s){
+  const t=document.getElementById('aiTrace'); if(!t) return;
+  let box=t.querySelector('.ai-trace');
+  if(!box){ t.innerHTML='<details class="ai-trace" open><summary>🤖 Agent 执行轨迹 · 多步工具调用(事实全部本地核算)</summary><div class="ai-trace-list"></div></details>'; box=t.querySelector('.ai-trace'); }
+  const list=box.querySelector('.ai-trace-list'); if(!list) return;
+  const esc=x=>String(x==null?'':x).replace(/</g,'&lt;');
+  let html='';
+  if(s.type==='think'){ html='<div class="ai-tr-step think">🧠 第'+s.round+'轮 · 模型规划中…</div>'; }
+  else if(s.type==='wait'){ html='<div class="ai-tr-step think">⏳ 触发限流,7s 后自动重试…</div>'; }
+  else if(s.type==='fallback'){ html='<div class="ai-tr-step warn">⚠ Agent 循环中断('+esc(s.note)+'),已回退单步模式</div>'; }
+  else if(s.type==='call'){
+    const a=s.args||{}, r=s.result||{}; let label='',out='';
+    if(s.name==='search_communities'){ const cond=[a.budgetWan?('预算≤'+a.budgetWan+'万'):null,a.propType,a.plate,a.sortBy?('按'+a.sortBy):null].filter(Boolean).join('·')||'全部'; label='🔍 筛选楼盘('+esc(cond)+')'; out=r.count!=null?('→ '+r.count+' 个候选'):''; }
+    else if(s.name==='get_community'){ label='📋 查档案:'+esc((r&&r.name)||a.id); out=r.error?('→ '+esc(r.error)):'→ 评分+依据+风险'; }
+    else if(s.name==='measure_distance'){ label='📐 测距:'+esc((r&&r.楼盘)||a.id)+' → '+esc(a.target); out=(r&&r.距离km!=null)?('→ '+(r.名称?esc(r.名称)+' ':'')+r.距离km+'km'):(r.error?('→ '+esc(r.error)):''); }
+    else if(s.name==='compare_communities'){ label='⚖ 横向对比 '+((a.ids||[]).length)+' 盘'; out='→ 对比表(价格/评分/距离)'; }
+    else if(s.name==='submit_recommendation'){ label='✅ 提交推荐('+(((a.picks)||[]).length)+' 个 · id 闭集校验通过)'; }
+    else { label='🔧 '+esc(s.name); }
+    html='<div class="ai-tr-step">'+label+' <span class="ai-tr-out">'+esc('')+out+'</span></div>';
+  }
+  if(html){ list.insertAdjacentHTML('beforeend',html); list.scrollTop=list.scrollHeight; }
+}
+
 // ── 主调用 ──
 async function runAiAdvisor(){
   const q=(document.getElementById('aiQuery').value||'').trim();
@@ -6000,7 +6201,22 @@ async function runAiAdvisor(){
   const key=getGeminiKey();
   if(!key){ showKeySetup(); renderAdvisorError('还没有设置 Gemini API Key。点上方 ⚙ 或下方输入框粘贴你的 Key 即可开始（仅存本机，不上传）。'); return; }
   const myReq=++_aiReq;
+  _traceReset();
   setAiLoading(true);
+  // Agent 模式:多步工具调用(默认);任何失败回退到下方单步直出
+  if(_agentMode){
+    try{
+      const out=await _agentLoop(q,key,{ onStep:(s)=>{ if(myReq===_aiReq) _traceStep(s); } });
+      if(myReq!==_aiReq) return;
+      renderAdvisorResult(out.data);
+      setAiLoading(false);
+      return;
+    }catch(e){
+      if(myReq!==_aiReq) return;
+      console.warn('[AI Agent] 回退单步:',e);
+      _traceStep({ type:'fallback', note:String(e&&e.message||e).slice(0,60) });
+    }
+  }
   try{
     const res=await fetch(GEMINI_ENDPOINT,{
       method:'POST',
@@ -6076,7 +6292,11 @@ function _idealSet(tc){
   pool=pool.slice().sort((a,b)=>_evalScore(b,k)-_evalScore(a,k));
   return pool.slice(0,4).map(c=>c.id);
 }
-async function _evalCall(q,key){
+async function _evalCall(q,key,agent){
+  if(agent){ // agent 模式:走多步工具调用循环,额外记录工具调用步数
+    const out=await _agentLoop(q,key,{ maxRounds:8 });
+    const d=out.data; d._toolCalls=out.toolCalls; return d;
+  }
   const res=await fetch(GEMINI_ENDPOINT,{ method:'POST',
     headers:{'Content-Type':'application/json','x-goog-api-key':key},
     body:JSON.stringify({ systemInstruction:{parts:[{text:AI_SYSTEM_INSTRUCTION}]},
@@ -6092,6 +6312,7 @@ function _scoreCase(tc,data,err){
   if(err||!data){ r.error=err||'no data'; r.summary='调用失败:'+r.error; return r; }
   const picks=Array.isArray(data.picks)?data.picks:[];
   r.picks=picks.map(p=>p.id);
+  if(data._toolCalls!=null) r.m.toolCalls=data._toolCalls;
   let halluc=0;
   picks.forEach(p=>{ const c=communities.find(x=>x.id===p.id); if(!c||c.name!==p.name) halluc++; });
   r.m.hallucinated=halluc;
@@ -6131,16 +6352,20 @@ function _aggEval(rows){
   const avgR=precC.length?+(precC.reduce((a,r)=>a+r.m.recall,0)/precC.length).toFixed(2):'—';
   const tradeoff=done.filter(r=>r.m.tradeoffOk).length;
   const traps=rows.filter(r=>r.m&&r.m.trapPass!=null); const trapP=traps.filter(r=>r.m.trapPass).length;
-  return { 用例数:rows.length, 成功调用:done.length, 推荐总数:totalPicks,
+  const tcC=done.filter(r=>r.m.toolCalls!=null);
+  const avgTc=tcC.length?+(tcC.reduce((a,r)=>a+r.m.toolCalls,0)/tcC.length).toFixed(1):null;
+  const out={ 用例数:rows.length, 成功调用:done.length, 推荐总数:totalPicks,
     幻觉条数:halluc, 幻觉率:(totalPicks?(halluc/totalPicks*100).toFixed(1)+'%':'—'),
     预算违规用例:budget, 类型违规用例:type,
     优先级命中:prioC.length?(prioH+'/'+prioC.length):'—',
     平均精确率:avgP, 平均召回率:avgR, 取舍完整:tradeoff+'/'+done.length, 陷阱通过:traps.length?(trapP+'/'+traps.length):'—' };
+  if(avgTc!=null) out['平均工具调用']=avgTc;
+  return out;
 }
-function _evalMarkdown(rows,agg){
+function _evalMarkdown(rows,agg,mode){
   const nameOf=id=>{ const c=communities.find(x=>x.id===id); return c?c.name:id; };
   let md='# 南山置业图鉴 · AI 选房顾问 Eval 报告\n\n';
-  md+='- 模型:`'+GEMINI_MODEL+'` · 用例:'+rows.length+' · 楼盘清单:'+communities.length+' 个(真实坐标)\n\n';
+  md+='- 模型:`'+GEMINI_MODEL+'` · 模式:'+(mode||'single(单次直出)')+' · 用例:'+rows.length+' · 楼盘清单:'+communities.length+' 个(真实坐标)\n\n';
   md+='## 方法\n';
   md+='- **事实层(程序化校验,ground truth = 真实坐标距离/价格)**:幻觉(编造盘或错名)、预算违规(推荐总价 > 用户预算)、类型违规(要住宅却推商务公寓)。\n';
   md+='- **对齐层(对照透明规则基线)**:基线 = `可负担 ∩ 按优先级评分排序的 Top4`;计算 AI 推荐对基线的精确率/召回率。\n';
@@ -6166,17 +6391,18 @@ async function nspEval(opts){
   opts=opts||{}; const key=getGeminiKey();
   if(!key){ console.error('%c[NSP Eval] 请先在页面右上 ⚙ 设置 Gemini Key 再运行','color:#c0392b'); return; }
   let cases=EVAL_CASES.slice(); if(opts.limit) cases=cases.slice(0,opts.limit);
-  const spacing=opts.spacing||7000;
-  console.log('%c[NSP Eval] 开始,共 '+cases.length+' 例(每例间隔 '+(spacing/1000)+'s 避免限流)…','color:#c6a05a;font-weight:bold');
+  const agent=!!opts.agent; // nspEval({agent:true}) → 评测多步 Agent 路径(更慢:每例多次 API 调用)
+  const spacing=opts.spacing||(agent?15000:7000);
+  console.log('%c[NSP Eval] 开始,共 '+cases.length+' 例 · 模式:'+(agent?'agent(多步工具调用)':'single(单次直出)')+'(每例间隔 '+(spacing/1000)+'s 避免限流)…','color:#c6a05a;font-weight:bold');
   const rows=[];
   for(let i=0;i<cases.length;i++){ const tc=cases[i]; let data=null,err=null;
-    try{ data=await _evalCall(tc.q,key); }catch(e){ err=String(e&&e.message||e); }
+    try{ data=await _evalCall(tc.q,key,agent); }catch(e){ err=String(e&&e.message||e); }
     const r=_scoreCase(tc,data,err); rows.push(r);
     console.log('('+(i+1)+'/'+cases.length+') '+tc.id+' → '+r.summary);
     if(opts.onProgress){ try{ opts.onProgress(i+1, cases.length, r.summary); }catch(_){} }
     if(i<cases.length-1) await _sleep(spacing);
   }
-  const agg=_aggEval(rows); const md=_evalMarkdown(rows,agg);
+  const agg=_aggEval(rows); const md=_evalMarkdown(rows,agg,agent?'agent(多步工具调用)':'single(单次直出)');
   window._lastEval={rows,agg,md};
   console.log('%c==== Eval 汇总 ====','color:#c6a05a;font-weight:bold'); console.table(agg);
   _downloadText('nsp-ai-eval-'+rows.length+'cases.md',md);
@@ -6834,7 +7060,7 @@ function _amenRealKm(name, c){
     <div class="ai-panel-title"><span class="spark">✦</span> AI 选房顾问</div>
     <button class="ai-panel-x" onclick="toggleAiPanel()" title="关闭">✕</button>
   </div>
-  <div class="ai-disclaimer">由 Google Gemini 2.5 Flash 驱动 · 你的浏览器与 Google 直连 · AI 建议仅供参考</div>
+  <div class="ai-disclaimer">Gemini 2.5 Flash · 多步 Agent(工具调用核实事实) · 浏览器与 Google 直连 · 建议仅供参考</div>
   <div style="display:flex;align-items:center;justify-content:space-between;padding:4px 22px 0;gap:8px">
     <div id="aiRoleSub" style="font-family:'EB Garamond',serif;font-style:italic;font-size:11.5px;color:var(--ink3)">买家模式 · 一句话描述需求，AI 帮你选房</div>
     <button id="roleSwitchPill" onclick="toggleRole()">🏠 买家 · 切换</button>
@@ -6853,11 +7079,15 @@ function _amenRealKm(name, c){
       <div class="ai-key-btns"><button onclick="saveGeminiKey()">保存</button><button onclick="clearGeminiKey()">清除 Key</button></div>
     </div>
     <div class="ai-panel-actions">
+      <label class="ai-agent-toggle" title="开:AI 通过多步工具调用(筛选/测距/对比,本地真实坐标计算)核实事实后再推荐;关:单次调用直出">
+        <input type="checkbox" id="agentModeChk" checked onchange="toggleAgentMode(this)"> 🤖 Agent 多步工具
+      </label>
       <button class="ai-gear" onclick="showKeySetup()" title="设置 Gemini API Key">⚙</button>
       <button class="ai-go" id="aiGoBtn" onclick="runAiAdvisor()">智能匹配 →</button>
     </div>
+    <div id="aiTrace"></div>
     <div id="aiResult" class="ai-result"></div>
-    <div class="ai-credit">真实 LLM 调用 · 模型只能从图鉴内 19 个楼盘中推荐，不编造数据</div>
+    <div class="ai-credit">真实 LLM Agent · 事实由本地工具基于真实坐标核算,AI 只负责权衡 · 推荐 id 闭集锁定,不编造楼盘</div>
     <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <button onclick="runEvalButton()" style="font-size:11.5px;padding:6px 12px;border:1px solid var(--gold-b);border-radius:14px;background:var(--white);color:var(--gold);cursor:pointer;white-space:nowrap;">🧪 跑 AI 评测</button>
       <span id="evalStatus" style="font-size:11px;color:#9a9088;flex:1;min-width:120px;"></span>
