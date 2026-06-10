@@ -2859,7 +2859,7 @@ const communities = [
   ,{
     id:'szwan1',searchName:'深圳湾1号',name:'深圳湾壹号',plate:'深圳湾/后海',
     lat:22.506895,lng:113.942717,tier:'S',
-    propType:'公寓',isOrdinary:false,landYear:40,propNote:'商业用地·商用水电·不可落户·无学区',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',
+    propType:'公寓',isOrdinary:false,landYear:40,propNote:'商业用地·商用水电·不可落户·无学区',tierLabel:'第一梯队',tagline:'深圳湾圈层天花板',
     price:20.0,priceRange:'二手总价3000万起',size:'170–510㎡（二手流通）',delivery:'已建成 可即住',
     minPrice:30000,
     scores:{保值率:97,教育:88,医疗:82,空气:93,健康宜居:93},
@@ -6079,7 +6079,7 @@ function _execAgentTool(name,args){
   const fmtTotal=mp=> mp>=10000 ? (mp/10000).toFixed(1)+'亿' : (mp||0)+'万';
   if(name==='search_communities'){
     let pool=communities.slice();
-    if(args.budgetWan) pool=pool.filter(c=>(c.minPrice||0)<=args.budgetWan);
+    if(args.budgetWan!=null){ const bw=+args.budgetWan; if(isFinite(bw)) pool=(bw>0?pool.filter(c=>(c.minPrice||0)<=bw):[]); } // 0/负数=预算无解→空集,不可静默放行
     if(args.propType) pool=pool.filter(c=>(c.propType||'住宅')===args.propType);
     if(args.plate) pool=pool.filter(c=>String(c.plate||'').indexOf(args.plate)>=0||String(c.name||'').indexOf(args.plate)>=0);
     const k=args.sortBy;
@@ -6144,7 +6144,10 @@ async function _agentLoop(q,key,opts){
     const calls=parts.filter(p=>p.functionCall).map(p=>p.functionCall);
     if(!calls.length){
       const txt=parts.map(p=>p.text||'').join('');
-      try{ const d=JSON.parse(txt); if(d&&d.picks) return { data:d, toolCalls:toolCalls, viaText:true }; }catch(_){}
+      // 文本旁路也要走与 submit 同等的校验:picks 必须是数组 + 闭集过滤 + 名称归一;否则落入下方纠偏
+      try{ const d=JSON.parse(txt); if(d&&Array.isArray(d.picks)){
+        d.picks=d.picks.filter(p=>p&&communities.find(c=>c.id===p.id)).map(p=>{ const c=communities.find(x=>x.id===p.id); p.name=c.name; return p; });
+        return { data:d, toolCalls:toolCalls, viaText:true }; } }catch(_){}
       // 给模型一次纠偏机会:提醒必须走 submit_recommendation
       if(round<maxRounds){ contents.push(cand.content); contents.push({ role:'user', parts:[{ text:'请通过 submit_recommendation 工具提交最终推荐,不要用纯文本作答。' }] }); continue; }
       throw new Error('Agent 未通过 submit_recommendation 提交');
@@ -6182,13 +6185,14 @@ function _traceStep(s){
   else if(s.type==='fallback'){ html='<div class="ai-tr-step warn">⚠ Agent 循环中断('+esc(s.note)+'),已回退单步模式</div>'; }
   else if(s.type==='call'){
     const a=s.args||{}, r=s.result||{}; let label='',out='';
-    if(s.name==='search_communities'){ const cond=[a.budgetWan?('预算≤'+a.budgetWan+'万'):null,a.propType,a.plate,a.sortBy?('按'+a.sortBy):null].filter(Boolean).join('·')||'全部'; label='🔍 筛选楼盘('+esc(cond)+')'; out=r.count!=null?('→ '+r.count+' 个候选'):''; }
-    else if(s.name==='get_community'){ label='📋 查档案:'+esc((r&&r.name)||a.id); out=r.error?('→ '+esc(r.error)):'→ 评分+依据+风险'; }
-    else if(s.name==='measure_distance'){ label='📐 测距:'+esc((r&&r.楼盘)||a.id)+' → '+esc(a.target); out=(r&&r.距离km!=null)?('→ '+(r.名称?esc(r.名称)+' ':'')+r.距离km+'km'):(r.error?('→ '+esc(r.error)):''); }
+    // label/out 先拼纯文本,最后统一 esc 一次(模型可控的工具参数/结果是注入面,不留"看似转义了"的陷阱)
+    if(s.name==='search_communities'){ const cond=[a.budgetWan!=null?('预算≤'+a.budgetWan+'万'):null,a.propType,a.plate,a.sortBy?('按'+a.sortBy):null].filter(Boolean).join('·')||'全部'; label='🔍 筛选楼盘('+cond+')'; out=r.count!=null?('→ '+r.count+' 个候选'):''; }
+    else if(s.name==='get_community'){ label='📋 查档案:'+((r&&r.name)||a.id); out=r.error?('→ '+r.error):'→ 评分+依据+风险'; }
+    else if(s.name==='measure_distance'){ label='📐 测距:'+((r&&r.楼盘)||a.id)+' → '+a.target; out=(r&&r.距离km!=null)?('→ '+(r.名称?r.名称+' ':'')+r.距离km+'km'):(r.error?('→ '+r.error):''); }
     else if(s.name==='compare_communities'){ label='⚖ 横向对比 '+((a.ids||[]).length)+' 盘'; out='→ 对比表(价格/评分/距离)'; }
     else if(s.name==='submit_recommendation'){ label='✅ 提交推荐('+(((a.picks)||[]).length)+' 个 · id 闭集校验通过)'; }
-    else { label='🔧 '+esc(s.name); }
-    html='<div class="ai-tr-step">'+label+' <span class="ai-tr-out">'+esc('')+out+'</span></div>';
+    else { label='🔧 '+s.name; }
+    html='<div class="ai-tr-step">'+esc(label)+' <span class="ai-tr-out">'+esc(out)+'</span></div>';
   }
   if(html){ list.insertAdjacentHTML('beforeend',html); list.scrollTop=list.scrollHeight; }
 }
