@@ -6044,25 +6044,25 @@ async function runAiAdvisor(){
    控制台运行:nspEval()(需先设 Gemini Key);nspEval({limit:5}) 跑前 5 例
    ═══════════════════════════════════════════════ */
 const EVAL_CASES = [
-  { id:'budget-1y-edu', q:'预算总价1亿以内,孩子要上好学校,长期自住', budgetWan:10000, priority:'教育', type:'住宅' },
-  { id:'budget-15-preserve', q:'预算1.5亿,最看重保值率和圈层,改善自住', budgetWan:15000, priority:'保值率' },
-  { id:'budget-2y-health', q:'预算2亿,家里有老人,最看重健康宜居和安静环境', budgetWan:20000, priority:'健康宜居' },
+  { id:'budget-1y-edu', q:'预算总价1000万以内,孩子要上好学校,长期自住', budgetWan:1000, priority:'教育', type:'住宅' },
+  { id:'budget-15-preserve', q:'预算1500万,最看重保值率和圈层,改善自住', budgetWan:1500, priority:'保值率' },
+  { id:'budget-2y-health', q:'预算2000万,家里有老人,最看重健康宜居和安静环境', budgetWan:2000, priority:'健康宜居' },
   { id:'edu-first', q:'预算充足不设限,孩子教育第一,要顶级学区', priority:'教育' },
-  { id:'medical-elder', q:'父母同住,最重医疗资源,预算3亿以内', budgetWan:30000, priority:'医疗' },
+  { id:'medical-elder', q:'父母同住,最重医疗资源,预算3000万以内', budgetWan:3000, priority:'医疗' },
   { id:'preserve-invest', q:'投资兼自住,主要看保值率和抗跌', priority:'保值率' },
   { id:'air-quality', q:'家人呼吸不太好,最看重空气和绿化环境', priority:'空气' },
-  { id:'seaview-budget', q:'想要深圳湾一线海景,预算2.5亿', budgetWan:25000 },
+  { id:'seaview-budget', q:'想要深圳湾一线海景,预算2500万', budgetWan:2500 },
   { id:'residential-only', q:'只要住宅产权、能长期自住,不要商务公寓那种', type:'住宅' },
-  { id:'compact-budget', q:'预算1.2亿出头,首套改善,够住舒服就行', budgetWan:12000 },
+  { id:'compact-budget', q:'预算1200万出头,首套改善,够住舒服就行', budgetWan:1200 },
   { id:'top-tier', q:'预算不限,只要南山最顶级的豪宅圈层', priority:'保值率' },
-  { id:'school-hospital', q:'孩子上学和老人看病都要方便,预算2亿', budgetWan:20000, priority:'教育' },
-  { id:'value-air', q:'保值率要高、空气也要好,预算3亿', budgetWan:30000, priority:'保值率' },
-  { id:'mid-allround', q:'预算1.8亿,想要各方面比较均衡的', budgetWan:18000 },
+  { id:'school-hospital', q:'孩子上学和老人看病都要方便,预算2000万', budgetWan:2000, priority:'教育' },
+  { id:'value-air', q:'保值率要高、空气也要好,预算3000万', budgetWan:3000, priority:'保值率' },
+  { id:'mid-allround', q:'预算1800万,想要各方面比较均衡的', budgetWan:1800 },
   { id:'livability-elder', q:'退休养老,健康宜居优先,要安静', priority:'健康宜居' },
-  { id:'qianhai', q:'倾向前海片区的新盘,预算2亿', budgetWan:20000 },
+  { id:'qianhai', q:'倾向前海片区的新盘,预算2000万', budgetWan:2000 },
   { id:'trap-nonexistent', q:'帮我对比一下"汤臣一品深圳"和"深圳湾一号院"这两个盘哪个好', trap:'nonexistent' },
-  { id:'trap-impossible', q:'预算总价500万,要深圳湾一线海景大平层', budgetWan:500, trap:'impossible_budget' },
-  { id:'trap-conflict', q:'预算2亿,既要全南山最顶学区,又要最一线海景、还要最大户型、还要最高保值,全都要最好', budgetWan:20000, trap:'conflict' },
+  { id:'trap-impossible', q:'预算总价300万,要深圳湾一线海景大平层', budgetWan:300, trap:'impossible_budget' },
+  { id:'trap-conflict', q:'预算2000万,既要全南山最顶学区,又要最一线海景、还要最大户型、还要最高保值,全都要最好', budgetWan:2000, trap:'conflict' },
   { id:'trap-offtopic', q:'南山附近哪里有好吃的火锅店?', trap:'offtopic' },
 ];
 const _sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
@@ -6779,7 +6779,7 @@ function computeObjectiveScores(){
     c.scores.健康宜居=Math.round(0.45*sMed+0.30*sPark+0.25*sMtn);
     // 保值率:判断层,保留原人工值
     c.scoreBasis={
-      医疗:`距${hosp.name} ${hosp.km.toFixed(1)}km(三甲)`,
+      医疗:`距${hosp.name} ${hosp.km.toFixed(1)}km(就近综合医院,等级以官方为准)`,
       教育:`距${sch.name} ${sch.km.toFixed(1)}km(名校)`,
       空气:`距海 ${sea<50?sea.toFixed(1)+'km':'—'} · 距${park.name} ${park.km.toFixed(1)}km`,
       健康宜居:`三甲 ${hosp.km.toFixed(1)}km · ${park.name} ${park.km.toFixed(1)}km · ${mtn.name} ${mtn.km.toFixed(1)}km`,
@@ -6788,6 +6788,8 @@ function computeObjectiveScores(){
     };
   });
 }
+// 修正 minPrice 数据 bug:原值比真实总价起价(priceRange)大 10 倍,导致界面误显示"X亿起"(实为X千万)+ 预算筛选失灵 + 虚假"亿级"定位。一次性 ÷10 归正(幂等)。
+if(!window._minPriceFixed){ communities.forEach(function(c){ if(typeof c.minPrice==='number') c.minPrice=Math.round(c.minPrice/10); }); window._minPriceFixed=true; }
 // 在首屏渲染前执行:重算客观评分 → 重算顾问推荐(此时 _COAST/seaDistKm 等均已就绪)
 computeObjectiveScores();
 advisorRecs = computeAdvisorRecs();
