@@ -6669,6 +6669,8 @@ function _apply3DStateFromHash(){
 }
 // 若以分享链接打开页面,自动进入 3D 并还原视角(_initCesium 末尾会调 _apply3DStateFromHash)
 window.addEventListener('load', function(){ try{ if(/[#&]v=/.test(location.hash||'')) open3DTerrain(); }catch(_){} });
+// 兜底:无论走哪条进入路径(含跳过引导/返回访客/老标签),加载后都默认进入沉浸(地图当主角)。intro 覆盖期间收起不可见,进工具即已收起。enterMainStage 的同样调用因已开而跳过,无重复。
+window.addEventListener('load', function(){ setTimeout(function(){ try{ if(typeof immersiveMode!=='undefined' && !immersiveMode && typeof toggleImmersive==='function' && document.querySelector('.panel')){ toggleImmersive(); } }catch(_){} }, 800); });
 
 /* ── 呼吸光晕:每个楼盘脚下一圈缓慢扩散又淡出的光晕(参考花语地球 rings 的"焦点呼吸");halo 带 _cid 可点可悬,_halo 标记让高亮逻辑跳过它,避免冻结脉冲 ── */
 function _addPulseHalos(){
