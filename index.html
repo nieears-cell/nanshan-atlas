@@ -640,6 +640,8 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
   width:0!important;min-width:0!important;opacity:0;
   border-right:none!important;overflow:hidden;
 }
+.market-signals{transition:height .3s cubic-bezier(.4,0,.2,1),opacity .22s ease,padding .3s,margin .3s;overflow:hidden;}
+.market-signals.hud-hidden{height:0!important;min-height:0!important;opacity:0;padding-top:0!important;padding-bottom:0!important;margin:0!important;border:none!important;}
 
 /* ── Edge peek (沉浸模式下·鼠标贴边UI浮现) ── */
 body.immersive-active .budget-strip.hud-hidden,
@@ -3384,9 +3386,7 @@ function enterMainStage(){
   refreshBudgetMarkers();
   if(advisorMode) refreshAdvisorMarkers();
   if(map) setTimeout(()=>renderClusters(),400);
-  setTimeout(()=>{
-    if(!immersiveMode) toggleImmersive();
-  }, 900);
+  if(!immersiveMode) toggleImmersive();   // 用户选 A:进入即沉浸——地图当主角,顶部筛选+左列表默认收起(贴边悬停或点右上「退出」唤出)
   setTimeout(()=>initMarketSignals(), 300);
 
   // v13 · 显示梯队切换器 + 默认开启势力图 + 匹配盘焦点
@@ -4728,7 +4728,7 @@ function toggleImmersive(){
   btn.classList.toggle('im-on', immersiveMode);
   btn.querySelector('span:last-child').textContent = immersiveMode ? '退出' : '沉浸';
 
-  const targets = ['.budget-strip', '.poi-strip', '.advisor-strip', '.panel'];
+  const targets = ['.market-signals', '.budget-strip', '.poi-strip', '.advisor-strip', '.panel'];
   targets.forEach(sel => {
     const el = document.querySelector(sel);
     if(el) el.classList.toggle('hud-hidden', immersiveMode);
