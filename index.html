@@ -6335,7 +6335,7 @@ async function _initCesium(){
       v.scene.postProcessStages.add(_lensStage);
     }catch(e){ console.warn('[lens]',e); }
     // —— 真实感升级包:数据天花板之外的"光·水·空气"层(均挂画质开关,⚡流畅模式自动关) ——
-    try{ v.scene.highDynamicRange=true; }catch(_){}   // HDR:更接近真实相机的光响应
+    try{ v.scene.highDynamicRange=false; }catch(_){}   // HDR 关闭:实测把中暗部压成死黑("一片黑"主因之一),且白吃一个渲染 pass
     try{ // 真实水面:深圳湾动态水波 + 阳光镜面反射。保守内缩多边形(只盖确定是海的区域);若有偏差会被地形盖住=隐形失败,不会穿帮。待视觉校准后再外扩到贴岸。
       const _SEA=[[113.935,22.470],[113.985,22.480],[114.000,22.455],[113.970,22.425],[113.925,22.440],[113.930,22.462]];
       const flat=[]; _SEA.forEach(p=>{ const w=gcj02ToWgs84(p[0],p[1]); flat.push(w[0],w[1]); });
@@ -6604,7 +6604,7 @@ function _apply3DMode(){
     v.clock.currentTime=Cesium.JulianDate.fromIso8601(dusk?'2026-06-09T10:00:00Z':'2026-06-09T08:00:00Z');
     // 卫星影像压暗去饱和 → 暮/夜地表
     for(let i=0;i<v.imageryLayers.length;i++){ const L=v.imageryLayers.get(i);
-      L.brightness=dusk?0.62:1.0; L.saturation=dusk?0.72:1.0; L.gamma=1.0; }
+      L.brightness=dusk?0.72:1.0; L.saturation=dusk?0.78:1.0; L.gamma=1.0; }
     _styleBuildings(dusk);
     try{ if(_waterPrim){ const u=_waterPrim.appearance.material.uniforms;   // 暮色海面:深蓝 + 更亮的低角度镜面反光
       u.baseWaterColor=dusk?new Cesium.Color(0.08,0.15,0.24,0.90):new Cesium.Color(0.12,0.30,0.38,0.86);
@@ -6638,7 +6638,7 @@ function _applyQuality(){
     if(_lensStage) _lensStage.enabled=hq;           // 暗角/颗粒后期
     if(pp.ambientOcclusion) pp.ambientOcclusion.enabled=hq&&_dusk3D;
     v.entities.values.forEach(e=>{ if(e._halo) e.show=hq; });  // 19 个逐帧动画光晕
-    try{ v.scene.highDynamicRange=hq; }catch(_){}
+    try{ if(_osmTileset){ _osmTileset.customShader=hq?_facadeShader:undefined; _osmTileset.maximumScreenSpaceError=hq?10:16; } }catch(_){}  // 流畅:关窗格着色器 + 降建筑密度(卡的大头)
     if(_waterPrim) _waterPrim.show=hq;                          // 动态水面
     if(_cloudCol) _cloudCol.show=hq;                            // 体积云
     if(_lensFlare) _lensFlare.enabled=hq;                       // 镜头光晕
