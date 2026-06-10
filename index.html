@@ -4878,6 +4878,9 @@ function initAMap(){
     aMarkers[c.id]=m;
   });
 
+  // 首屏自适应:把全部楼盘标记缩放居中、填满地图视口(避免一上来一大片空白,屏幕利用率低)
+  try{ map.setFitView(Object.values(aMarkers), true, [120, 60, 70, 70]); }catch(_){}
+
   // Step 2: auto-correct via PlaceSearch — runs in browser with real Amap POI data
   const ps = new AMap.PlaceSearch({city:'深圳',citylimit:true,pageSize:1});
   communities.forEach(c=>{
@@ -6387,46 +6390,15 @@ async function _initCesium(){
       osm.style=new Cesium.Cesium3DTileStyle({
         defines:{ h:"${feature['cesium#estimatedHeight']}" },
         color:{ conditions:[
-          ["${h} >= 180","color('#c6a05a')"],
-          ["${h} >= 100","color('#9aa7b8')"],
-          ["${h} >= 50","color('#828d9c')"],
-          ["true","color('#6f7a88')"]
+          ["${h} >= 180","color('#d8b370')"],   // 调浅:真实城市从空中看是浅色(米白/暖灰/玻璃蓝),深灰蓝像"贴上去的模型"
+          ["${h} >= 100","color('#b9c3cd')"],
+          ["${h} >= 50","color('#c6c2b8')"],
+          ["true","color('#cfccc3')"]
         ]}
       });
-      v.scene.primitives.add(osm); _osmTileset=osm;   // 存引用:日/暮切换要重着色
-      try{ // 程序化立面:侧墙生成窗格(玻璃压暗);暮色时 ~45% 窗户随机点暖灯("万家灯火",配 Bloom 发光)。楼的"真实感"最后一大档。
-        _facadeShader=new Cesium.CustomShader({
-          mode:Cesium.CustomShaderMode.MODIFY_MATERIAL,
-          uniforms:{ u_dusk:{ type:Cesium.UniformType.FLOAT, value:0.0 } },
-          varyings:{ v_nspPos:Cesium.VaryingType.VEC3, v_nspNrm:Cesium.VaryingType.VEC3 },   // positionMC/normalMC 在片元不可用,必须经顶点着色器传 varying
-          vertexShaderText:
-            'void vertexMain(VertexInput vsInput, inout czm_modelVertexOutput vsOutput){\n'+
-            '  v_nspPos=vsInput.attributes.positionMC;\n'+
-            '  v_nspNrm=vsInput.attributes.normalMC;\n'+
-            '}\n',
-          fragmentShaderText:
-            'float nspHash(vec2 p){ vec3 p3=fract(vec3(p.xyx)*0.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }\n'+
-            'void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material){\n'+
-            '  vec3 pos=v_nspPos;\n'+
-            '  vec3 n=normalize(v_nspNrm);\n'+
-            '  float wall=1.0-abs(n.z);\n'+                                     // 侧墙≈1,屋顶≈0
-            '  if(wall>0.6){\n'+
-            '    vec2 uv;\n'+
-            '    uv.y=pos.z/3.1;\n'+                                            // 层高 ~3.1m
-            '    uv.x=(abs(n.x)>abs(n.y)?pos.y:pos.x)/2.6;\n'+                  // 沿立面水平方向,开间 ~2.6m
-            '    vec2 cell=floor(uv); vec2 f=fract(uv);\n'+
-            '    float isWin=step(0.18,f.x)*step(f.x,0.82)*step(0.25,f.y)*step(f.y,0.80);\n'+
-            '    vec3 glass=material.diffuse*0.55+vec3(0.08,0.10,0.12);\n'+     // 日间窗=深一档的玻璃色
-            '    material.diffuse=mix(material.diffuse,glass,isWin*0.55);\n'+
-            '    float lit=step(0.55,nspHash(cell))*u_dusk;\n'+                 // 暮色 ~45% 窗点灯
-            '    vec3 warm=vec3(1.0,0.78,0.45)*(0.55+0.45*nspHash(cell+7.7));\n'+
-            '    material.emissive+=warm*isWin*lit*0.9;\n'+
-            '  }\n'+
-            '}\n'
-        });
-        osm.customShader=_facadeShader;
-        osm.maximumScreenSpaceError=10;   // 建筑 LOD 加密一档(默认16):远处楼更早进高细节
-      }catch(e){ console.warn('[facade]',e); }
+      v.scene.primitives.add(osm); _osmTileset=osm;
+      osm.maximumScreenSpaceError=10;   // 建筑 LOD 加密一档(默认16):更密的城市(画质模式;流畅模式回 16)
+      // 注:程序化立面窗格着色器已移除——盲调下窗格未能正确成形(positionMC 尺度/轴向不确定),反而把楼压暗。改用浅色块 + 真实光影即可。
     }catch(e){ console.warn('[OSM buildings]',e); }
     // 19 个楼盘 → 转 WGS-84 → 贴地标注
     communities.forEach(c=>{
@@ -6638,7 +6610,7 @@ function _applyQuality(){
     if(_lensStage) _lensStage.enabled=hq;           // 暗角/颗粒后期
     if(pp.ambientOcclusion) pp.ambientOcclusion.enabled=hq&&_dusk3D;
     v.entities.values.forEach(e=>{ if(e._halo) e.show=hq; });  // 19 个逐帧动画光晕
-    try{ if(_osmTileset){ _osmTileset.customShader=hq?_facadeShader:undefined; _osmTileset.maximumScreenSpaceError=hq?10:16; } }catch(_){}  // 流畅:关窗格着色器 + 降建筑密度(卡的大头)
+    try{ if(_osmTileset){ _osmTileset.maximumScreenSpaceError=hq?10:16; } }catch(_){}  // 流畅:降建筑密度(卡的大头)
     if(_waterPrim) _waterPrim.show=hq;                          // 动态水面
     if(_cloudCol) _cloudCol.show=hq;                            // 体积云
     if(_lensFlare) _lensFlare.enabled=hq;                       // 镜头光晕
@@ -6897,7 +6869,6 @@ function _amenRealKm(name, c){
     <div class="t3d-actions">
       <button class="t3d-btn" id="t3dQualityBtn" onclick="toggleQuality3D()" title="画质 / 流畅切换">⚡ 流畅</button>
       <button class="t3d-btn" id="t3dTourBtn" onclick="startTour()">▶ 导览</button>
-      <button class="t3d-btn" id="t3dModeBtn" onclick="toggle3DMode()">🌆 暮色</button>
       <button class="t3d-btn" onclick="copy3DShareLink()">🔗 分享视角</button>
       <button class="t3d-btn" onclick="reset3DView()">↺ 全景</button>
       <button class="t3d-btn t3d-close" onclick="close3DTerrain()">✕ 退出</button>
